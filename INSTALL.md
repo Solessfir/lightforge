@@ -201,9 +201,9 @@ desktop app needs is loaded at runtime.
 
 ### To run
 
-**Fonts.** Text is drawn with whatever fontconfig provides; no fonts are
-built in. Every normal desktop has them. A minimal container doesn't, and
-shows blank labels.
+**Fonts.** The interface uses the configured desktop font, then Fontconfig's
+sans-serif font, with bundled Fira Sans as a fallback so labels remain readable
+without desktop fonts. Fontconfig also supplies monospace fonts and additional scripts.
 
 **A desktop portal.** The file and folder pickers go through
 `xdg-desktop-portal` and a backend for it. Every desktop environment ships

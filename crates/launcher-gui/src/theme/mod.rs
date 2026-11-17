@@ -6,6 +6,7 @@
 //!    gold play, the only saturated colours.
 //! 3. **Machine text is monospaced**: versions, paths, ids.
 
+use iced::advanced::graphics::text::cosmic_text::{fontdb, FontSystem};
 use iced::{Color, Font, Shadow, Theme, Vector};
 
 mod buttons;
@@ -18,6 +19,93 @@ mod tests;
 pub use buttons::*;
 pub use containers::*;
 pub use inputs::*;
+
+pub fn init_fonts() {
+    let configured = desktop_font();
+    let system_sans = command_output("fc-match", &["-f", "%{family[0]}", "sans-serif"]);
+    let mut system = iced::advanced::graphics::text::font_system()
+        .write()
+        .expect("font system lock poisoned");
+    let family = select_sans(system.raw(), configured.as_deref(), system_sans.as_deref());
+    tracing::debug!(%family, "selected interface font");
+}
+
+fn command_output(command: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(command)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8(output.stdout).ok())
+        .flatten()
+}
+
+fn desktop_font() -> Option<String> {
+    if let Some(font) = command_output(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "font-name"],
+    ) {
+        return Some(font.trim().trim_matches('\'').to_owned());
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })?;
+    for version in ["gtk-4.0", "gtk-3.0"] {
+        if let Ok(settings) = std::fs::read_to_string(config.join(version).join("settings.ini")) {
+            if let Some(font) = settings
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .find_map(|(key, value)| {
+                    (key.trim() == "gtk-font-name").then(|| value.trim().to_owned())
+                })
+            {
+                return Some(font);
+            }
+        }
+    }
+    None
+}
+
+fn font_family(description: &str) -> &str {
+    let description = description.trim();
+    match description.rsplit_once(' ') {
+        Some((family, size)) if size.trim_end_matches("px").parse::<f32>().is_ok() => family,
+        _ => description,
+    }
+}
+
+fn select_sans(
+    system: &mut FontSystem,
+    configured: Option<&str>,
+    system_sans: Option<&str>,
+) -> String {
+    let family = [configured.map(font_family), system_sans, Some("Fira Sans")]
+        .into_iter()
+        .flatten()
+        .find(|family| {
+            let Some(id) = system.db().query(&fontdb::Query {
+                families: &[fontdb::Family::Name(family)],
+                ..fontdb::Query::default()
+            }) else {
+                return false;
+            };
+            system
+                .get_font(id, fontdb::Weight::NORMAL)
+                .is_some_and(|font| {
+                    let map = font.as_swash().charmap();
+                    (' '..='~').all(|character| map.map(character) != 0)
+                })
+        })
+        .expect("bundled Fira Sans supports interface text")
+        .to_owned();
+    // cosmic-text's hardcoded sans family can otherwise select an emoji font for ASCII.
+    system.db_mut().set_sans_serif_family(&family);
+    family
+}
 
 // ---------------------------------------------------------------- palette --
 

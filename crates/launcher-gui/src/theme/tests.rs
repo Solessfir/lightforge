@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn desktop_sans_draws_regular_and_bold_labels() {
+    use iced::advanced::graphics::text::font_system;
+
+    init_fonts();
+    let mut system = font_system().write().unwrap();
+    let system = system.raw();
+    let family = system
+        .db()
+        .family_name(&fontdb::Family::SansSerif)
+        .to_owned();
+    println!("Selected interface font: {family}");
+    assert_sans_draws(system, &family);
+}
+
+#[test]
+fn bundled_sans_draws_without_system_fonts() {
+    use iced::advanced::graphics::text::{cosmic_text, FIRA_SANS_REGULAR};
+
+    let mut db = fontdb::Database::new();
+    db.load_font_data(FIRA_SANS_REGULAR.to_vec());
+    let mut system = cosmic_text::FontSystem::new_with_locale_and_db("en-US".to_owned(), db);
+    assert_eq!(
+        select_sans(
+            &mut system,
+            Some("Missing Desktop Font 10"),
+            Some("Missing Sans")
+        ),
+        "Fira Sans"
+    );
+    assert_sans_draws(&mut system, "Fira Sans");
+}
+
+#[test]
+fn desktop_font_description_preserves_multiword_and_numbered_families() {
+    assert_eq!(font_family("Inter Variable 10"), "Inter Variable");
+    assert_eq!(font_family("Noto Sans 10.5"), "Noto Sans");
+    assert_eq!(font_family("DIN 1451 12px"), "DIN 1451");
+    assert_eq!(font_family("Fira Sans"), "Fira Sans");
+}
+
+fn assert_sans_draws(system: &mut FontSystem, family: &str) {
+    use iced::advanced::graphics::text::cosmic_text::{
+        Attrs, Buffer, Family, Metrics, Shaping, Weight,
+    };
+
+    for weight in [Weight::NORMAL, Weight::BOLD] {
+        let mut buffer = Buffer::new(system, Metrics::new(16.0, 20.0));
+        buffer.set_size(system, Some(1000.0), Some(100.0));
+        buffer.set_text(
+            system,
+            "Welcome to Lightforge! Get started",
+            &Attrs::new().family(Family::SansSerif).weight(weight),
+            Shaping::Basic,
+            None,
+        );
+        buffer.shape_until_scroll(system, false);
+        let glyphs: Vec<_> = buffer.layout_runs().flat_map(|run| run.glyphs).collect();
+        assert!(!glyphs.is_empty());
+        for glyph in glyphs {
+            assert_ne!(
+                glyph.glyph_id, 0,
+                "missing label glyph at weight {weight:?}"
+            );
+            assert!(system
+                .db()
+                .face(glyph.font_id)
+                .unwrap()
+                .families
+                .iter()
+                .any(|(name, _)| name == family));
+        }
+    }
+}
+
+#[test]
 fn text_on_a_state_colour_stays_readable() {
     // Install, Play and Update are all light enough to need dark text;
     // green OK is the one that needs white. Getting this backwards makes

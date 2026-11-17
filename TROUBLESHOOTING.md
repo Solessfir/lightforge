@@ -181,9 +181,10 @@ It only takes folders that no managed addon already owns.
 
 ### Blank text, or it won't start at all
 
-**Blank labels** mean there are no fonts. Lightforge doesn't ship its own and
-uses whatever fontconfig provides. Every normal desktop has fonts; a minimal
-container may not.
+**Blank labels in older builds** can occur even with fonts installed when the
+text library selects an emoji font for ordinary text. Update Lightforge: the
+interface now validates the desktop or system sans-serif font and falls back to
+bundled Fira Sans when neither can draw ordinary text.
 
 **A window that never appears, or a GPU that misbehaves**: force software
 rendering.
