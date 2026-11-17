@@ -93,9 +93,9 @@ pub(crate) enum Command {
         #[arg(long)]
         skip_preflight: bool,
     },
-    /// Launch the game directly under Proton, the `[ PLAY ]` path.
+    /// Launch the game directly under Proton, without Battle.net sign-in.
     ///
-    /// Runs pre-flight first, then starts the game as PLAY does: from its own
+    /// Runs pre-flight first, then starts the game from its own
     /// library, under its Proton pin and Game Settings. Battle.net is not
     /// involved.
     Play {

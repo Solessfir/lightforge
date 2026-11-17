@@ -110,6 +110,8 @@ impl Lightforge {
             bnet_icon,
             gear_open: false,
             client_up: false,
+            game_time: None,
+            game_time_checked: None,
             client_menu_open: false,
             client_phase: ClientPhase::Settled,
             launch_after_client: None,

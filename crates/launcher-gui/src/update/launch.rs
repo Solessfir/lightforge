@@ -34,7 +34,7 @@ impl Lightforge {
                         self.pause(&self.selected.code.clone());
                         Task::none()
                     }
-                    ActionState::Play => self.preflight(Launch::Game),
+                    ActionState::Play => self.preflight(self.play_launch()),
                     ActionState::Unknown => Task::none(),
                     // Nothing to download and nothing to repair: look for the
                     // drive again, and reload the product if it came back.
@@ -188,7 +188,7 @@ impl Lightforge {
                         match Kind::of(&code) {
                             // Its store is ours: Agent must not patch it.
                             Kind::Managed => {
-                                self.launch_failed("Battle.net wants to update this game — press Play to start it here")
+                                self.launch_failed("Battle.net wants to update this game - open Battle.net to continue")
                             }
                             // The lock is released: an update can take an hour,
                             // and another game can be played meanwhile.
@@ -284,6 +284,8 @@ impl Lightforge {
                     }
                 }
                 if !up {
+                    self.game_time = None;
+                    self.game_time_checked = None;
                     self.update_pending = None;
                 }
                 // `|`, not `||`: both are taken, or one answers again next poll.
@@ -298,9 +300,19 @@ impl Lightforge {
                     ));
                 }
                 match up {
-                    true => self.check_update_pending(),
+                    true => Task::batch([self.check_update_pending(), self.check_game_time()]),
                     false => Task::none(),
                 }
+            }
+
+            Message::GameTimeRead(code, at, time) => {
+                if self.client_up && self.client_phase == ClientPhase::Settled
+                    && code == self.selected.code
+                    && self.game_time_checked.as_ref() == Some(&(code.clone(), at))
+                {
+                    self.game_time = time.map(|time| (code, time));
+                }
+                Task::none()
             }
 
             Message::ClientUpdatePending(code, pending) => {

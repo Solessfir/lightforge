@@ -15,6 +15,7 @@
 //! Phases 3 and 4 run with no Battle.net process alive: the client rewrites
 //! `Battle.net.config` on exit and would otherwise clobber the injection.
 
+mod game_time;
 mod installer;
 mod launch;
 mod overrides;
@@ -25,6 +26,7 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+pub use game_time::{game_time, GameTime};
 pub use installer::{fetch_installer, InstallOutcome, Installer, INSTALLER_FILE, INSTALLER_URL};
 pub use launch::{game_uid, game_uri, launch, launch_wrapped, resolve_game_uid, Launch};
 pub use overrides::{record_overrides, restore_overrides};

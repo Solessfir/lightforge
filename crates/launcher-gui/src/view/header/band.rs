@@ -329,7 +329,7 @@ impl Lightforge {
 
     /// What the Battle.net button does now: bring a running client up, or
     /// start one through pre-flight.
-    fn battle_net_press(&self) -> Option<Message> {
+    pub(crate) fn battle_net_press(&self) -> Option<Message> {
         match (self.busy || self.quitting_client, self.client_up) {
             (true, _) => None,
             (false, true) => Some(Message::ShowBattleNet),

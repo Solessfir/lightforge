@@ -3,6 +3,17 @@
 use crate::*;
 
 impl Lightforge {
+    pub(crate) fn play_launch(&self) -> Launch {
+        let profile = self.config.product(&self.selected.code).map(|product| &product.profile);
+        let stock = !matches!(self.selected.code, ProductCode::Custom(_))
+            && !profile.is_some_and(|profile| profile.realmlist_override.is_some() || profile.cdn_override.is_some());
+        if stock && !self.config.battle_net_declined && self.setup.as_ref().is_some_and(|setup| setup.battle_net) {
+            Launch::BattleNet
+        } else {
+            Launch::Game
+        }
+    }
+
     /// Get out of the way, where the user asked for that.
     ///
     /// Nothing un-minimizes when the game exits.
@@ -47,7 +58,15 @@ impl Lightforge {
             .companions
             .iter()
             .filter(|c| c.game == code && c.start_with_game)
-            .map(|c| Task::perform(tasks::launch_companion(self.config.clone(), self.layout.clone(), c.clone()), Message::CompanionStarted))
+            .map(|c| Task::perform(
+                tasks::launch_companion(
+                    self.config.clone(),
+                    self.layout.clone(),
+                    c.clone(),
+                    Some(if settle_after.is_some() { tasks::Runs::Game } else { tasks::Runs::BattleNet }),
+                ),
+                Message::CompanionStarted,
+            ))
             .collect();
         let watch = Task::perform(
             tasks::await_game_exit(self.config.clone(), self.layout.clone(), code.clone(), game, settle_after),
@@ -59,6 +78,38 @@ impl Lightforge {
     /// Ask the process table whether the Battle.net client is up.
     pub(crate) fn check_client(&self) -> Task<Message> {
         Task::perform(tasks::prefix_seen(self.layout.clone()), |(up, game)| Message::ClientSeen { up, game })
+    }
+
+    pub(crate) fn check_game_time(&mut self) -> Task<Message> {
+        if !self.client_up || self.client_phase != ClientPhase::Settled {
+            self.game_time = None;
+            self.game_time_checked = None;
+            return Task::none();
+        }
+        let code = self.selected.code.clone();
+        if self.game_time_checked.as_ref().is_some_and(|(checked_code, at)| {
+            checked_code == &code && at.elapsed() < Duration::from_secs(60)
+        }) {
+            return Task::none();
+        }
+        let at = Instant::now();
+        self.game_time_checked = Some((code.clone(), at));
+        Task::perform(
+            tasks::game_time(self.layout.clone(), self.config.prefix_user.clone(), code.clone()),
+            move |time| Message::GameTimeRead(code.clone(), at, time),
+        )
+    }
+
+    pub(crate) fn game_time_days(&self) -> Option<u64> {
+        let (code, time) = self.game_time.as_ref()?;
+        let now = std::time::SystemTime::now();
+        if !self.client_up || self.client_phase != ClientPhase::Settled || code != &self.selected.code
+            || now.duration_since(time.observed_at).ok()? > Duration::from_secs(24 * 60 * 60)
+        {
+            return None;
+        }
+        let days = time.days_remaining(now);
+        (days > 0).then_some(days)
     }
 
     /// Ask the client's log about the selected game, for the button's word.

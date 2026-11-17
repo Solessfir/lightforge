@@ -410,7 +410,7 @@ impl LogTail {
 }
 
 /// A line's time in seconds, from `I 2026-11-06 09:55:25.943151 [Main] …`.
-fn line_time(line: &str) -> Option<f64> {
+pub(super) fn line_time(line: &str) -> Option<f64> {
     let (date, time) = line.get(2..)?.split_once(' ')?;
     let time = time.split(' ').next()?;
     let mut ymd = date.split('-').map(|part| part.parse::<i64>().ok());

@@ -295,7 +295,7 @@ pub(crate) enum Launch {
     Game,
     /// Hand off to Battle.net, which starts the game itself.
     ///
-    /// For games only Battle.net installs; the shop works from a direct launch.
+    /// Uses the client's remembered sign-in for supported games.
     BattleNet,
     /// Open the Battle.net client itself, for everything outside the WoW
     /// family. A pass-through, not a managed install; see `SPEC.md`.

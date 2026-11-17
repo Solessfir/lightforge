@@ -321,6 +321,13 @@ impl Lightforge {
                     .align_y(Alignment::Center),
             );
         }
+        if let Some(days) = self.game_time_days() {
+            left = left.push(tooltip(
+                muted(format!("Game time: {days} {} remaining", if days == 1 { "day" } else { "days" }), theme::CAPTION),
+                text("Last reported by Battle.net for its selected WoW license. Partial days round up."),
+                tooltip::Position::Top,
+            ));
+        }
         if action.is_playable() {
             left = self.pre_download_lines(left);
         }
@@ -386,8 +393,7 @@ impl Lightforge {
 
     /// Manage Addons, Game Settings, Manage Subscription.
     fn product_links(&self) -> Element<'_, Message> {
-        // A mark before each says "control". Padded on all sides, or the
-        // text touches the hover fill's edge.
+        // A mark before each says "control".
         let link = |mark: image::Handle, label: &'static str, message: Option<Message>| {
             button(
                 row![
@@ -405,9 +411,9 @@ impl Lightforge {
             )
             .on_press_maybe(message)
             .style(theme::ghost)
-            .padding(theme::tap([theme::XS, theme::SM]))
+            .padding(theme::tap([theme::XS, 0.0]))
         };
-        let mut links = row![].spacing(theme::XS).align_y(Alignment::Center);
+        let mut links = row![].spacing(theme::MD).align_y(Alignment::Center);
         if self.config.addon_manager {
             // Disabled until there is an install.
             let manage = self.local.version.is_some().then_some(Message::Show(Screen::Addons));
@@ -487,6 +493,7 @@ impl Lightforge {
         .style(theme::outlined)
         .padding(theme::tap([theme::SM, theme::MD]))
         .width(Length::Fixed(240.0));
+        let battle_net_press = self.battle_net_press();
 
         // A split button, as Battle.net's. The cog is an image: the font has no U+2699.
         let gear = button(
@@ -529,10 +536,10 @@ impl Lightforge {
             control,
             self.ring(
                 focus::Target::LaunchViaBattleNet,
-                (!self.busy && session.is_none()).then_some(Message::BattleNet),
-                match self.busy || session.is_some() {
-                    true => battle_net,
-                    false => battle_net.on_press(Message::BattleNet),
+                battle_net_press.clone(),
+                match battle_net_press {
+                    Some(message) => battle_net.on_press(message),
+                    None => battle_net,
                 },
             ),
         ]

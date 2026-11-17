@@ -523,3 +523,10 @@ mod tests {
         assert!(client.done.borrow().is_empty());
     }
 }
+
+/// The selected WoW license's recently observed game time, without account credentials.
+pub async fn game_time(layout: Layout, user: String, code: ProductCode) -> Option<battlenet::GameTime> {
+    tokio::task::spawn_blocking(move || battlenet::game_time(&layout, &user, &code, SystemTime::now()))
+        .await
+        .unwrap_or(None)
+}

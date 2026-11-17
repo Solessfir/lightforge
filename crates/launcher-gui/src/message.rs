@@ -172,6 +172,7 @@ pub(crate) enum Message {
     ClientWatch,
     /// The poll's answer: the client up, and a game in the prefix.
     ClientSeen { up: bool, game: bool },
+    GameTimeRead(ProductCode, Instant, Option<lightforge_core::battlenet::GameTime>),
     /// The menu beside a running Battle.net's button.
     ToggleClientMenu,
     /// Bring a running client's window up, without restarting it.

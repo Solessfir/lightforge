@@ -22,6 +22,17 @@ without the Battle.net client. It speaks Blizzard's own distribution protocols
 your game lands in a store the real client can read: point Battle.net at the
 folder and it adopts it, no re-download.
 
+When Battle.net is installed, the GUI's **Play** button launches official WoW
+through it to use its remembered sign-in. Without Battle.net, or for custom
+servers, Play launches directly. The CLI's `play` command launches directly
+with manual login and the game's own Proton and Game Settings.
+**Launch via Battle.net** opens the client without starting a game.
+When the running client reports a game-time expiry for its selected WoW license,
+Lightforge shows the days remaining below the installed version. Partial days round
+up; missing, expired, or more than 24-hour-old observations are hidden.
+Enable **Seamless Battle.net Mode** to keep Battle.net
+signed in and hidden while Lightforge is open.
+
 For everything else (Diablo, Overwatch, Hearthstone, StarCraft) it sets up
 one Battle.net prefix and hands the launch to the client. Those games get a
 tile here and start with one press.

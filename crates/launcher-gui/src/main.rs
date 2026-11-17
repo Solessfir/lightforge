@@ -289,6 +289,9 @@ struct Lightforge {
     /// Whether the Battle.net client is up in the prefix, checked every few
     /// seconds: under Wine its tray icon is often nowhere to be seen.
     client_up: bool,
+    /// The running client's selected license, refreshed at most once a minute.
+    game_time: Option<(ProductCode, lightforge_core::battlenet::GameTime)>,
+    game_time_checked: Option<(ProductCode, Instant)>,
     /// Whether the menu beside a running Battle.net's button is open.
     client_menu_open: bool,
     /// What the background client is doing, beyond running.

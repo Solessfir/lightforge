@@ -110,8 +110,8 @@ impl Lightforge {
                          or its window is open. Needs a saved sign-in. Its notifications and game \
                          updates stay off until you switch this off, which puts your own settings back. \
                          On a desktop with no tray, closing its window quits it. \
-                         Games it starts use its Proton build. World of Warcraft never goes through it, so it starts no \
-                         faster, and Play closes it for a build of its own.",
+                         Games it starts use its Proton build and launch settings. \
+                         Direct launches use the game's own Proton build and Game Settings.",
                     ),
                     switch("battle.net in background", self.config.battle_net_in_background, Message::BattleNetInBackground),
                 ),
@@ -138,16 +138,16 @@ impl Lightforge {
                 ),
                 match self.config.battle_net_in_background {
                     true => setting(
-                        "Close Battle.net when I press Play",
+                        "Close Battle.net on direct launches",
                         "Off while Seamless Battle.net Mode is on.",
                         None,
                         iced::widget::toggler(false).size(theme::tap_text(20.0)).style(theme::switch),
                     ),
                     false => setting(
-                        "Close Battle.net when I press Play",
+                        "Close Battle.net on direct launches",
                         "Off keeps it open beside the game.",
                         self.hint(
-                            "Only for Play. Launching through Battle.net, and its own install \
+                            "Only for direct launches. Launching through Battle.net, and its own install \
                              and repair flows, start the client afresh whatever this says.",
                         ),
                         switch("close battle.net on play", self.config.close_battle_net_on_play, Message::CloseBattleNetOnPlay),

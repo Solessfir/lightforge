@@ -1761,6 +1761,17 @@ fn incomplete() -> Complete {
 }
 
 #[test]
+fn opening_battle_net_never_requests_a_game_launch() {
+    let (mut app, _scratch) = test_app();
+    app.client_up = false;
+    assert!(matches!(app.battle_net_press(), Some(Message::OpenBattleNet)));
+    app.client_up = true;
+    assert!(matches!(app.battle_net_press(), Some(Message::ShowBattleNet)));
+    app.busy = true;
+    assert!(app.battle_net_press().is_none());
+}
+
+#[test]
 fn battle_net_running_offers_show_and_quit_and_closes_the_menu_when_it_goes() {
     let (mut app, _scratch) = test_app();
     app.dirs = None;
@@ -1785,6 +1796,47 @@ fn nothing_starts_in_the_background_unless_asked() {
     let (mut app, _scratch) = test_app();
     let _ = app.warm_client();
     assert_eq!(app.client_phase, ClientPhase::Settled);
+}
+
+#[test]
+fn play_uses_remembered_sign_in_only_for_stock_wow_with_battle_net() {
+    let (mut app, _scratch) = test_app();
+    app.selected.code = ProductCode::Retail;
+    app.setup = None;
+    assert_eq!(app.play_launch(), Launch::Game);
+
+    let mut setup = SetupStatus::inspect(&app.layout, app.dirs.as_ref().unwrap(), &app.config);
+    setup.battle_net = false;
+    app.setup = Some(setup);
+    assert_eq!(app.play_launch(), Launch::Game);
+    app.setup.as_mut().unwrap().battle_net = true;
+    for code in [ProductCode::Retail, ProductCode::Classic, ProductCode::ClassicEra, ProductCode::Forever] {
+        app.selected.code = code;
+        assert_eq!(app.play_launch(), Launch::BattleNet);
+    }
+
+    app.selected.code = ProductCode::Retail;
+    app.config.battle_net_declined = true;
+    assert_eq!(app.play_launch(), Launch::Game);
+    app.config.battle_net_declined = false;
+    app.selected.code = ProductCode::Custom("wow_private".to_owned());
+    assert_eq!(app.play_launch(), Launch::Game);
+
+    app.selected.code = ProductCode::Retail;
+    app.config.product_mut(&ProductCode::Retail).unwrap().profile.realmlist_override = Some("private.example".to_owned());
+    assert_eq!(app.play_launch(), Launch::Game);
+    app.config.product_mut(&ProductCode::Retail).unwrap().profile.realmlist_override = None;
+    app.config.product_mut(&ProductCode::Retail).unwrap().profile.cdn_override = Some("https://private.example".to_owned());
+    assert_eq!(app.play_launch(), Launch::Game);
+
+    app.config.product_mut(&ProductCode::Retail).unwrap().profile.cdn_override = None;
+    app.local.build_key = Some("installed".to_owned());
+    app.local.executable = Some(app.layout.wow_exe(&ProductCode::Retail));
+    app.local.store_files = 1;
+    app.remote = None;
+    app.client_phase = ClientPhase::SigningIn;
+    let _ = app.update(Message::Primary);
+    assert_eq!(app.launch_after_client, Some((Launch::BattleNet, ProductCode::Retail)));
 }
 
 #[test]
@@ -1866,7 +1918,7 @@ fn a_launch_that_starts_nothing_says_why_where_it_stays_on_screen() {
     let _ = app.update(Message::HandoffStarted(Ok(tasks::Handoff::NeedsUpdate)));
     assert!(!app.busy);
     let shown = app.error.as_ref().expect("the status line would be overwritten by the reload");
-    assert!(shown.message.contains("press Play"), "{}", shown.message);
+    assert!(shown.message.contains("open Battle.net"), "{}", shown.message);
 }
 
 #[test]
@@ -1971,7 +2023,7 @@ fn a_game_lightforge_manages_is_never_updated_through_the_client() {
 
     let _ = app.update(Message::HandoffStarted(Ok(tasks::Handoff::NeedsUpdate)));
     assert!(app.client_update.is_none());
-    assert!(app.error.as_ref().is_some_and(|e| e.message.contains("press Play")));
+    assert!(app.error.as_ref().is_some_and(|e| e.message.contains("open Battle.net")));
 }
 
 #[test]
@@ -2381,4 +2433,34 @@ fn a_battle_net_repair_waits_for_a_running_setup() {
     app.setup_running = true;
     let _ = app.update(Message::RepairBattleNet);
     assert!(app.error.is_some());
+}
+
+#[test]
+fn game_time_only_shows_fresh_data_for_the_selected_running_client() {
+    use std::time::SystemTime;
+    use lightforge_core::battlenet::GameTime;
+    let (mut app, _scratch) = test_app();
+    app.client_up = true;
+    let now = SystemTime::now();
+    let time = GameTime { expires_at: now + Duration::from_secs(90_000), observed_at: now - Duration::from_secs(1) };
+    let code = app.selected.code.clone();
+    let at = Instant::now();
+    app.game_time_checked = Some((code.clone(), at));
+    let _ = app.update(Message::GameTimeRead(code.clone(), at, Some(time)));
+    assert_eq!(app.game_time_days(), Some(2));
+    let _ = app.check_game_time();
+    assert_eq!(app.game_time_checked, Some((code.clone(), at)), "repeated polls are throttled");
+    app.client_phase = ClientPhase::SigningIn;
+    assert_eq!(app.game_time_days(), None);
+    app.client_phase = ClientPhase::Settled;
+    app.game_time = Some((ProductCode::Custom("other".into()), time));
+    assert_eq!(app.game_time_days(), None);
+    app.game_time = Some((code.clone(), GameTime { observed_at: now - Duration::from_secs(86_401), ..time }));
+    assert_eq!(app.game_time_days(), None);
+    app.game_time = Some((code.clone(), time));
+    let _ = app.update(Message::ClientSeen { up: false, game: false });
+    assert!(app.game_time.is_none());
+    app.client_up = true;
+    let _ = app.update(Message::GameTimeRead(code, at, Some(time)));
+    assert!(app.game_time.is_none(), "a result from before the client stopped is ignored");
 }
