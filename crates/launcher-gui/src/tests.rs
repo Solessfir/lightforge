@@ -1909,16 +1909,16 @@ fn a_hand_off_games_pin_is_locked_only_while_the_client_is_kept_in_the_backgroun
 }
 
 #[test]
-fn a_launch_that_starts_nothing_says_why_where_it_stays_on_screen() {
+fn a_managed_game_battle_net_would_update_starts_directly() {
     let (mut app, _scratch) = test_app();
     app.dirs = None;
     app.busy = true;
     app.launching = Some(ProductCode::Forever);
 
     let _ = app.update(Message::HandoffStarted(Ok(tasks::Handoff::NeedsUpdate)));
-    assert!(!app.busy);
-    let shown = app.error.as_ref().expect("the status line would be overwritten by the reload");
-    assert!(shown.message.contains("open Battle.net"), "{}", shown.message);
+    assert!(app.error.is_none());
+    assert!(app.busy, "the direct launch's pre-flight is under way");
+    assert_eq!(app.launching, Some(ProductCode::Forever));
 }
 
 #[test]
@@ -2023,7 +2023,15 @@ fn a_game_lightforge_manages_is_never_updated_through_the_client() {
 
     let _ = app.update(Message::HandoffStarted(Ok(tasks::Handoff::NeedsUpdate)));
     assert!(app.client_update.is_none());
-    assert!(app.error.as_ref().is_some_and(|e| e.message.contains("open Battle.net")));
+    assert_eq!(app.launching, Some(ProductCode::Forever), "it starts directly instead");
+}
+
+#[test]
+fn a_declined_client_never_blocks_the_client_poll() {
+    let (mut app, _scratch) = test_app();
+    app.config.battle_net_in_background = true;
+    app.config.battle_net_declined = true;
+    assert!(!app.client_may_return(), "the poll would otherwise only ever try to warm it");
 }
 
 #[test]
@@ -2463,4 +2471,351 @@ fn game_time_only_shows_fresh_data_for_the_selected_running_client() {
     app.client_up = true;
     let _ = app.update(Message::GameTimeRead(code, at, Some(time)));
     assert!(app.game_time.is_none(), "a result from before the client stopped is ignored");
+}
+
+#[test]
+fn seamless_play_only_becomes_available_after_sign_in() {
+    let (mut app, _scratch) = test_app();
+    let mut setup = SetupStatus::inspect(&app.layout, app.dirs.as_ref().unwrap(), &app.config);
+    setup.battle_net = true;
+    app.setup = Some(setup);
+    app.config.battle_net_in_background = true;
+    app.selected.code = ProductCode::Retail;
+    assert_eq!(app.play_wait_label(), Some("CONNECTING…"));
+    app.client_phase = ClientPhase::SigningIn;
+    assert_eq!(app.play_wait_label(), Some("SIGNING IN…"));
+    app.client_up = true;
+    let _ = app.update(Message::BackgroundClient(app.client_generation, Ok(tasks::Warmed::Ready)));
+    assert!(app.play_wait_label().is_none());
+    let _ = app.update(Message::ClientSignInSeen(app.client_generation + 1, false));
+    assert!(app.play_wait_label().is_none(), "old generations cannot change readiness");
+    let _ = app.update(Message::ClientSignInSeen(app.client_generation, false));
+    assert!(app.play_wait_label().is_some());
+    app.client_phase = ClientPhase::NeedsSignIn;
+    assert_eq!(app.play_wait_label(), Some("SIGN IN REQUIRED"));
+    app.config.battle_net_in_background = false;
+    assert!(app.play_wait_label().is_none(), "manual client startup remains possible");
+    app.config.battle_net_in_background = true;
+    app.selected.code = ProductCode::Custom("private".into());
+    assert!(app.play_wait_label().is_none(), "direct launches do not need Battle.net");
+}
+
+#[test]
+fn signing_in_after_the_watch_expires_unlocks_play_and_retires_the_watch() {
+    let (mut app, _scratch) = test_app();
+    let mut setup = SetupStatus::inspect(&app.layout, app.dirs.as_ref().unwrap(), &app.config);
+    setup.battle_net = true;
+    app.setup = Some(setup);
+    app.config.battle_net_in_background = true;
+    app.client_up = true;
+    app.client_phase = ClientPhase::NeedsSignIn;
+    app.tray_installed.insert(app.selected.code.clone());
+    let generation = app.client_generation;
+    let expired = || Message::BackgroundClient(generation, Ok(tasks::Warmed::NeedsSignIn { started: std::time::SystemTime::now() }));
+    let _ = app.update(expired());
+    assert!(app.play_wait_label().is_some());
+    let _ = app.update(Message::ClientSignInSeen(generation, true));
+    assert_eq!(app.client_phase, ClientPhase::Settled);
+    assert!(app.play_wait_label().is_none());
+    assert!(app.tray_games().iter().find(|game| game.code == app.selected.code).unwrap().enabled);
+    let _ = app.update(expired());
+    assert_eq!(app.client_phase, ClientPhase::Settled);
+}
+
+#[test]
+fn hidden_windows_ignore_queued_focus_events() {
+    let (mut app, _scratch) = test_app();
+    app.tray_hidden = true;
+    app.window_focused = false;
+    let _ = app.update(Message::WindowFocused(true));
+    assert!(!app.window_focused);
+}
+
+#[test]
+fn tray_launch_keeps_the_window_hidden_and_rechecks_availability() {
+    let (mut app, _scratch) = test_app();
+    let mut setup = SetupStatus::inspect(&app.layout, app.dirs.as_ref().unwrap(), &app.config);
+    setup.battle_net = true;
+    app.setup = Some(setup);
+    app.config.battle_net_in_background = true;
+    app.tray_hidden = true;
+    app.tray_installed.insert(ProductCode::Retail);
+    assert!(!app.tray_games().iter().find(|game| game.code == ProductCode::Retail).unwrap().enabled);
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    assert!(app.launching.is_none(), "sign-in is still pending");
+    app.config.battle_net_declined = true;
+    app.busy = true;
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    assert!(app.launching.is_none(), "a stale menu cannot start a second launch");
+    app.busy = false;
+    let _ = app.launch_from_tray(ProductCode::Custom("missing".into()));
+    assert!(app.launching.is_none());
+    app.selected.code = ProductCode::Classic;
+    app.client_update_retries = 2;
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "installed")));
+    assert_eq!(app.client_update_retries, 0, "each tray launch gets its own restart allowance");
+    assert_eq!(app.launching, Some(ProductCode::Retail));
+    assert_eq!(app.selected.code, ProductCode::Classic);
+    assert!(app.tray_hidden, "launching a game never opens the launcher");
+}
+
+#[test]
+fn tray_play_rejects_stale_clicks_for_a_game_being_updated() {
+    let (mut app, _scratch) = test_app();
+    let code = ProductCode::Custom("hs_beta".into());
+    app.choices.push(Choice { code: code.clone(), label: "Hearthstone".into() });
+    app.installed_versions.insert(code.as_str().into(), "1.0".into());
+    let enabled = |app: &Lightforge| app.tray_games().iter().find(|game| game.code == code).unwrap().enabled;
+    assert!(enabled(&app));
+    let _ = app.start_client_update(code.clone());
+    let progress = app.client_update.as_ref().unwrap().progress.clone();
+    assert!(!enabled(&app));
+
+    let _ = app.launch_from_tray(code.clone());
+    assert!(app.launching.is_none());
+    assert!(!app.busy);
+    let update = app.client_update.as_ref().unwrap();
+    assert!(Arc::ptr_eq(&progress, &update.progress), "the existing update must not be replaced");
+    assert!(update.selected_at_start.is_some(), "a stale click must not cancel the pending launch");
+    app.client_update = None;
+    assert!(enabled(&app));
+}
+
+#[test]
+fn asynchronous_tray_launch_failures_restore_the_window() {
+    for failure in [
+        Message::PreflightDone(Launch::BattleNet, Err("preflight failed".into())),
+        Message::GameStarted(Err("game failed".into())),
+        Message::HandoffStarted(Err("handoff failed".into())),
+        Message::HandoffStarted(Ok(tasks::Handoff::NothingStarted)),
+    ] {
+        let (mut app, _scratch) = test_app();
+        app.tray_hidden = true;
+        app.busy = true;
+        app.launching = Some(ProductCode::Retail);
+        let _ = app.update(failure);
+        assert!(app.error.is_some());
+        assert!(!app.tray_hidden, "the launch error must be visible");
+    }
+}
+
+#[test]
+fn a_background_update_launches_its_target_without_changing_selection() {
+    let (mut app, _scratch) = test_app();
+    let hearthstone = ProductCode::Custom("hs_beta".to_owned());
+    app.selected.code = ProductCode::Retail;
+    app.tray_hidden = true;
+    app.busy = true;
+    app.launching = Some(hearthstone.clone());
+    let _ = app.update(Message::HandoffStarted(Ok(tasks::Handoff::NeedsUpdate)));
+    assert!(app.client_update.is_some());
+
+    let _ = app.update(Message::ClientUpdateDone(hearthstone.clone(), Ok(tasks::ClientUpdated::Completed)));
+    assert_eq!(app.launching, Some(hearthstone));
+    assert_eq!(app.selected.code, ProductCode::Retail);
+    assert!(app.tray_hidden);
+}
+
+#[test]
+fn changing_selection_cancels_the_launch_after_a_client_update() {
+    let (mut app, _scratch) = test_app();
+    let hearthstone = ProductCode::Custom("hs_beta".to_owned());
+    let _ = app.start_client_update(hearthstone.clone());
+    app.selected.code = ProductCode::Classic;
+    let _ = app.update(Message::ClientUpdateDone(hearthstone, Ok(tasks::ClientUpdated::Completed)));
+    assert!(app.launching.is_none());
+    assert!(!app.busy);
+}
+
+#[test]
+fn changing_selection_during_handoff_cancels_the_launch_after_an_update() {
+    let (mut app, _scratch) = test_app();
+    let hearthstone = ProductCode::Custom("hs_beta".to_owned());
+    app.selected.code = hearthstone.clone();
+    let _ = app.preflight(Launch::BattleNet);
+    app.selected.code = ProductCode::Classic;
+    let _ = app.update(Message::HandoffStarted(Ok(tasks::Handoff::NeedsUpdate)));
+    let _ = app.update(Message::ClientUpdateDone(hearthstone, Ok(tasks::ClientUpdated::Completed)));
+    assert!(app.launching.is_none());
+    assert!(!app.busy);
+}
+
+#[test]
+fn a_new_explicit_launch_cancels_an_older_updates_launch_request() {
+    for via_tray in [false, true] {
+        let (mut app, _scratch) = test_app();
+        let hearthstone = ProductCode::Custom("hs_beta".to_owned());
+        let _ = app.start_client_update(hearthstone.clone());
+        app.tray_installed.insert(ProductCode::Retail);
+        if via_tray {
+            let _ = app.launch_from_tray(ProductCode::Retail);
+            let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "installed")));
+        } else {
+            let _ = app.preflight(Launch::Game);
+        }
+        let _ = app.game_up(lightforge_core::preflight::GameProcess { pid: u32::MAX, name: "Wow.exe".into() }, Some(0));
+        assert!(!app.busy);
+        let _ = app.update(Message::ClientUpdateDone(hearthstone, Ok(tasks::ClientUpdated::Completed)));
+        assert!(app.launching.is_none(), "a completed update cannot revive an older Play request");
+        assert!(!app.busy);
+    }
+}
+
+#[test]
+fn a_failed_client_update_restores_the_hidden_window() {
+    let (mut app, _scratch) = test_app();
+    let hearthstone = ProductCode::Custom("hs_beta".to_owned());
+    app.tray_hidden = true;
+    let _ = app.start_client_update(hearthstone.clone());
+    let _ = app.update(Message::ClientUpdateDone(hearthstone, Err("update failed".into())));
+    assert!(app.error.is_some());
+    assert!(!app.tray_hidden);
+}
+
+#[test]
+fn a_launch_failure_does_not_reopen_a_quitting_launcher() {
+    let (mut app, _scratch) = test_app();
+    app.tray_hidden = true;
+    app.launching = Some(ProductCode::Retail);
+    app.closing = Some(app.window_id);
+    let _ = app.update(Message::PreflightDone(Launch::BattleNet, Err("preflight failed".into())));
+    assert!(app.tray_hidden);
+}
+
+#[test]
+fn a_missing_managed_client_is_retried_on_the_next_poll() {
+    let (mut app, _scratch) = test_app();
+    app.config.battle_net_in_background = true;
+    app.client_up = false;
+    let _ = app.update(Message::ClientWatch);
+    assert_eq!(app.client_phase, ClientPhase::SigningIn);
+    let generation = app.client_generation;
+    let _ = app.update(Message::ClientWatch);
+    assert_eq!(app.client_generation, generation, "only one warm-up may run");
+    let _ = app.update(Message::BackgroundClient(generation, Ok(tasks::Warmed::NotStarted)));
+    assert_eq!(app.client_phase, ClientPhase::Settled);
+    assert_eq!(app.client_generation, generation, "a failed attempt must not retry in a tight loop");
+    let _ = app.update(Message::ClientWatch);
+    assert_eq!(app.client_generation, generation + 1);
+}
+
+#[test]
+fn quitting_lightforge_cancels_warmup_and_prevents_client_restarts() {
+    let (mut app, _scratch) = test_app();
+    app.config.battle_net_in_background = true;
+    let cancel = Cancel::new();
+    app.warming = Some(cancel.clone());
+    let _ = app.update(Message::Exit);
+    assert!(app.closing.is_some());
+    assert!(cancel.is_cancelled());
+    assert!(!app.client_may_return());
+    let generation = app.client_generation;
+    let _ = app.update(Message::ClientWatch);
+    assert_eq!(app.client_generation, generation);
+}
+
+/// An installed `code` whose latest build is `latest`; "installed" is current.
+fn tray_check(app: &Lightforge, code: &ProductCode, latest: &str) -> Box<Refreshed> {
+    let mut local = app.local.clone();
+    local.build_key = Some("installed".to_owned());
+    local.executable = Some(app.layout.wow_exe(code));
+    local.store_files = 1;
+    let remote = lightforge_core::tact::version::Version {
+        region: "eu".to_owned(),
+        build_config: latest.to_owned(),
+        cdn_config: String::new(),
+        key_ring: None,
+        build_id: 1,
+        versions_name: "1.0.0.1".to_owned(),
+        product_config: String::new(),
+    };
+    Box::new(Refreshed { local, remote: Some(remote), bgdl: None, offline: None })
+}
+
+#[test]
+fn a_tray_play_updates_an_outdated_game_first_and_starts_it_after() {
+    let (mut app, _scratch) = test_app();
+    app.tray_hidden = true;
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    assert_eq!(app.tray_play, Some(ProductCode::Retail));
+    assert!(app.launching.is_none(), "nothing starts before the version check");
+
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    assert!(app.download_for(&ProductCode::Retail).is_some(), "the update is queued");
+    assert!(app.launching.is_none(), "an outdated build is never launched");
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    assert_eq!(app.queue.iter().filter(|d| d.code == ProductCode::Retail).count(), 1, "a second click waits for the same update");
+
+    let _ = app.update(Message::Downloaded(ProductCode::Retail, Ok(Box::new(Complete { complete: true, ..incomplete() }))));
+    assert_eq!(app.launching, Some(ProductCode::Retail), "the updated game starts");
+    assert!(app.tray_play.is_none());
+    assert!(app.tray_hidden);
+}
+
+#[test]
+fn a_failed_tray_update_starts_nothing() {
+    let (mut app, _scratch) = test_app();
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    let _ = app.update(Message::Downloaded(ProductCode::Retail, Err("network down".into())));
+    assert!(app.tray_play.is_none());
+    assert!(app.launching.is_none());
+    assert!(app.tray_games().iter().any(|game| game.code == ProductCode::Retail && game.enabled), "the tray offers it again");
+}
+
+#[test]
+fn pausing_a_queued_tray_update_forgets_its_launch() {
+    let (mut app, _scratch) = test_app();
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    assert_eq!(app.tray_play, Some(ProductCode::Retail));
+    app.pause(&ProductCode::Retail);
+    assert!(app.tray_play.is_none(), "a later update of this game must not start it");
+}
+
+#[test]
+fn a_tray_update_held_back_by_a_pre_download_opens_the_window_instead() {
+    let (mut app, _scratch) = test_app();
+    app.tray_hidden = true;
+    app.tray_installed.insert(ProductCode::Retail);
+    app.selected.code = ProductCode::Retail;
+    let _ = app.enqueue_pre_download();
+    assert!(app.download_for(&ProductCode::Retail).is_some_and(|d| d.pre_download));
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    assert!(app.tray_play.is_none(), "no update was queued, so nothing may launch later");
+    assert!(!app.tray_hidden);
+}
+
+#[test]
+fn a_launch_started_during_the_tray_check_is_not_doubled() {
+    let (mut app, _scratch) = test_app();
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    app.selected.code = ProductCode::Classic;
+    let _ = app.preflight(Launch::Game);
+    assert!(app.busy);
+    let started = app.launching.clone();
+    assert_eq!(started, Some(ProductCode::Classic));
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "installed")));
+    assert_eq!(app.launching, started, "the dashboard's launch stands alone");
+    assert!(app.tray_play.is_none());
+}
+
+#[test]
+fn a_tray_check_answered_while_quitting_queues_and_opens_nothing() {
+    let (mut app, _scratch) = test_app();
+    app.tray_hidden = true;
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.launch_from_tray(ProductCode::Retail);
+    app.closing = Some(app.window_id);
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    assert!(app.download_for(&ProductCode::Retail).is_none());
+    assert!(app.tray_play.is_none());
+    assert!(app.tray_hidden);
 }

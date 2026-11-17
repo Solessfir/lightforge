@@ -34,6 +34,7 @@ pub(crate) fn play(ctx: Ctx, code: ProductCode, proton: Option<String>, dry_run:
         .with_managed(config.managed_products())
         .keeping_client(config.keeps_battle_net(true))
         .with_background_client(config.battle_net_in_background)
+        .with_window_restore(config.battle_net_in_background)
         .run(&launch.runner, &layout, Some(&code), &mut NoDownloads)
         .context("pre-flight cleanup")?;
     print_preflight(&report);
@@ -81,6 +82,7 @@ pub(crate) fn preflight(ctx: Ctx, proton: Option<String>, code: Option<ProductCo
     let report = Preflight::new(config.prefix_user.clone()).with_managed(config.managed_products())
         .with_grace(std::time::Duration::from_secs(grace))
         .with_background_client(config.battle_net_in_background)
+        .with_window_restore(config.battle_net_in_background)
         .run(&runner, &layout, code.as_ref(), &mut NoDownloads)
         .context("pre-flight cleanup")?;
     print_preflight(&report);

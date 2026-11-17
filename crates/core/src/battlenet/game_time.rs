@@ -1,14 +1,12 @@
 use std::collections::HashMap;
-use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::paths::Layout;
 use crate::product::ProductCode;
 
-use super::readiness::{SIGNED_IN, line_time};
+use super::readiness::{line_time, session_lines, sign_in_state};
 
 const DAY: Duration = Duration::from_secs(86_400);
-const MAX_LOG: u64 = 4 * 1024 * 1024;
 
 /// The selected WoW license's game time, reported by the signed-in client.
 #[derive(Clone, Copy, Debug)]
@@ -33,66 +31,42 @@ pub fn game_time(
     code: &ProductCode,
     now: SystemTime,
 ) -> Option<GameTime> {
-    let mut paths = Vec::new();
-    for entry in std::fs::read_dir(layout.battle_net_logs(user)).ok()? {
-        let entry = entry.ok()?;
-        let name = entry.file_name();
-        let name = name.to_str()?;
-        if name.starts_with("battle.net-") && name.ends_with(".log") {
-            paths.push(entry.path());
-            if paths.len() > 128 {
-                return None;
-            }
-        }
-    }
-    // Names carry startup time; an older running session can have a newer mtime.
-    paths.sort_unstable_by(|a, b| b.cmp(a));
-    for path in paths {
-        let file = std::fs::File::open(path).ok()?;
-        if !file.metadata().ok()?.is_file() {
-            return None;
-        }
-        let mut text = String::new();
-        file.take(MAX_LOG + 1).read_to_string(&mut text).ok()?;
-        if text.len() as u64 > MAX_LOG {
-            return None;
-        }
-        if text.len() < 16 * 1024
-            && text.contains("Leaving because another instance of battle.net is running")
-            && !text.contains(SIGNED_IN)
-        {
-            continue;
-        }
-        return session_time(&text, code, now);
-    }
-    None
+    let mut lines = session_lines(layout, user)?;
+    let time = lines_time(lines.by_ref(), code, now);
+    if lines.failed { None } else { time }
 }
 
+#[cfg(test)]
 fn session_time(text: &str, code: &ProductCode, now: SystemTime) -> Option<GameTime> {
+    lines_time(text.lines().map(|line| Some(line.to_owned())), code, now)
+}
+
+/// `None` lines are skipped records, which may have hidden a sign-out.
+fn lines_time(lines: impl Iterator<Item = Option<String>>, code: &ProductCode, now: SystemTime) -> Option<GameTime> {
     let mut signed_in = false;
-    let mut selected = None;
+    // The client logs one selection per WoW product it shows, all in one group.
+    let mut selected = HashMap::new();
     let mut times = HashMap::new();
-    for line in text.lines() {
-        if line.contains(SIGNED_IN) {
-            signed_in = true;
-        } else if line.contains("[BNLogin]")
-            && [
-                "Logged out",
-                "Logging out",
-                "Disconnected",
-                "Logging into Battle.net",
-            ]
-            .iter()
-            .any(|marker| line.contains(marker))
-        {
-            signed_in = false;
-            selected = None;
-            times.clear();
+    for line in lines {
+        let state = match &line {
+            Some(line) => sign_in_state(line),
+            None => Some(false),
+        };
+        if let Some(state) = state {
+            signed_in = state;
+            if !state {
+                selected.clear();
+                times.clear();
+            }
         }
+        let Some(line) = line else { continue };
         if let Some(account) = line.split_once("New selection for product group WoW: account=") {
-            selected = selection(account.1).filter(|(product, _, _)| {
-                *product == code.as_str() || *code == ProductCode::Retail && *product == "retail"
-            });
+            match selection(account.1) {
+                Some((product, region, license)) => {
+                    selected.insert(product.to_owned(), (region.to_owned(), license));
+                }
+                None => selected.clear(),
+            }
         }
         if let Some((_, info)) = line.split_once("Received GameTimeInfo: (Game: ") {
             let (game, info) = info.split_once(") info=")?;
@@ -108,17 +82,21 @@ fn session_time(text: &str, code: &ProductCode, now: SystemTime) -> Option<GameT
                     UNIX_EPOCH.checked_add(Duration::from_micros(expiry.parse().ok()?))?;
                 Some(GameTime {
                     expires_at,
-                    observed_at: timestamp(line)?,
+                    observed_at: timestamp(&line)?,
                 })
             });
-            times.insert((region, license), time);
+            times.insert((region.to_owned(), license), time);
         }
     }
     if !signed_in {
         return None;
     }
-    let (_, region, license) = selected?;
-    let time = times.get(&(region, license)).copied().flatten()?;
+    // Retail is `retail` in the selection, not its product code `wow`.
+    let account = (*code == ProductCode::Retail)
+        .then(|| selected.get("retail"))
+        .flatten()
+        .or_else(|| selected.get(code.as_str()))?;
+    let time = times.get(account).copied().flatten()?;
     (now.duration_since(time.observed_at).ok()? <= DAY && time.expires_at > now).then_some(time)
 }
 
@@ -227,6 +205,14 @@ mod tests {
     }
 
     #[test]
+    fn each_product_keeps_its_own_selection() {
+        let both = log().replace(SELECT, &(SELECT.replace("WoW:wowf", "WoW:retail") + SELECT));
+        assert!(session_time(&both, &ProductCode::Retail, now()).is_some(), "a later wowf selection must not hide retail");
+        assert!(session_time(&both, &ProductCode::Forever, now()).is_some());
+        assert!(session_time(&both, &ProductCode::Classic, now()).is_none());
+    }
+
+    #[test]
     fn empty_malformed_expired_or_changed_accounts_stay_unknown() {
         for extra in [
             info("EU", 42, None),
@@ -286,7 +272,11 @@ mod tests {
         assert!(game_time(&layout, "test", &ProductCode::Forever, now()).is_some());
         std::fs::write(&newer, "Logging started for Battle.net").unwrap();
         assert!(game_time(&layout, "test", &ProductCode::Forever, now()).is_none());
-        std::fs::write(&newer, "x".repeat(MAX_LOG as usize + 1)).unwrap();
+        std::fs::write(&newer, "x".repeat(64 * 1024 + 1)).unwrap();
         assert!(game_time(&layout, "test", &ProductCode::Forever, now()).is_none());
+        std::fs::remove_file(&newer).unwrap();
+        let long_session = log() + &format!("{}\n", "x".repeat(1023)).repeat(5 * 1024);
+        std::fs::write(dir.join("battle.net-20261117T000000.000000.log"), long_session).unwrap();
+        assert!(game_time(&layout, "test", &ProductCode::Forever, now()).is_some(), "a long session keeps its game time");
     }
 }

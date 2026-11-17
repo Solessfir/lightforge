@@ -60,6 +60,7 @@ fn clear(
 ) -> Result<lightforge_core::preflight::Report, Problem> {
     prefix().preflights.fetch_add(1, Ordering::SeqCst);
     let report = Preflight::new(config.prefix_user.clone())
+        .with_window_restore(true)
         .with_managed(config.managed_products())
         .keeping_client(config.keeps_battle_net(runs == Runs::Game))
         .with_background_client(config.battle_net_in_background)
@@ -343,10 +344,10 @@ pub async fn launch_via_battle_net(
             (before, cold)
         };
         if let Some((started, minimize)) = cold {
-            match battlenet::wait_until_ready(&layout, user, started, SIGN_IN_TIMEOUT, || preflight::client_running(&layout)) {
+            match wait_for_client(&layout, user, started, minimize) {
                 Readiness::SignedIn => {}
                 // Left to the user, who is told where the client is.
-                Readiness::NeedsAttention => return Ok(Handoff::NeedsAttention { minimized: minimize }),
+                Readiness::NeedsAttention => return Ok(Handoff::NeedsAttention { minimized: false }),
                 Readiness::Exited => return Ok(Handoff::ClientClosed),
             }
         }
@@ -451,6 +452,7 @@ pub async fn install_via_battle_net(
     label: String,
     cleared: (Cleared, SharedDownloads),
 ) -> Result<String, Problem> {
+    show_client_windows();
     tokio::task::spawn_blocking(move || -> Result<_, Problem> {
         use lightforge_core::battlenet::{self, Launch};
 
@@ -652,6 +654,7 @@ pub async fn open_battle_net(
     code: ProductCode,
     cleared: Option<(Cleared, SharedDownloads)>,
 ) -> Result<String, Problem> {
+    show_client_windows();
     tokio::task::spawn_blocking(move || -> Result<_, Problem> {
         use lightforge_core::battlenet::{self, Launch};
 

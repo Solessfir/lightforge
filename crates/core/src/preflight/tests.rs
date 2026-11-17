@@ -75,6 +75,26 @@ fn runner(layout: &Layout) -> crate::prefix::ProtonRunner {
 }
 
 #[test]
+fn a_gui_that_can_restore_the_client_enables_hide_on_close_only_in_background_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let layout = Layout::with_root(root.path());
+    let accounts = layout.battle_net_config("steamuser").parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&accounts).unwrap();
+    let account = accounts.join("1c858370.config");
+    std::fs::write(&account, r#"{"User":{"Client":{"HideOnClose":"false"}}}"#).unwrap();
+
+    for background in [true, false] {
+        Preflight::new("steamuser")
+            .with_background_client(background)
+            .with_window_restore(true)
+            .run(&runner(&layout), &layout, None, &mut NoDownloads)
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&account).unwrap()).unwrap();
+        assert_eq!(config["User"]["Client"]["HideOnClose"], if background { "true" } else { "false" });
+    }
+}
+
+#[test]
 fn a_second_launch_goes_beside_a_running_game() {
     let layout = Layout::with_root("/games/beside-a-game");
     let mut game = stand_in(&layout, r"C:\Program Files (x86)\Hearthstone\Hearthstone.exe");

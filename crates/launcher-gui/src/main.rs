@@ -23,6 +23,7 @@ mod report;
 mod tasks;
 mod theme;
 mod trace;
+mod tray;
 mod update;
 mod view;
 mod widgets;
@@ -139,7 +140,8 @@ fn main() -> iced::Result {
         return Ok(());
     }
     start_logging();
-    if !instance::claim(std::env::args().any(|arg| arg == instance::AFTER_UPDATE)) {
+    let start_in_tray = std::env::args().any(|arg| arg == "--start-in-tray");
+    if !instance::claim(std::env::args().any(|arg| arg == instance::AFTER_UPDATE), !start_in_tray) {
         return Ok(());
     }
     tune_allocator();
@@ -148,23 +150,23 @@ fn main() -> iced::Result {
     trace::begin();
     // 0.14 takes the boot function where 0.13 took the title, and runs it
     // from `run`, not `run_with`.
-    iced::application(
-        || {
-            let (app, task) = Lightforge::new();
+    iced::daemon(
+        move || {
+            let (app, task) = Lightforge::new(start_in_tray);
             trace::mark("app constructed, startup tasks queued");
             (app, task)
         },
         Lightforge::update,
-        Lightforge::view,
+        Lightforge::view_window,
     )
     .title("Lightforge")
     .subscription(Lightforge::subscription)
     // Annotated: without the type the closure is inferred for one
     // lifetime, and 0.14's `theme` wants it for any.
-    .theme(|_state: &Lightforge| theme::base())
+    .theme(|_state: &Lightforge, _| theme::base())
     // The interface size on a desktop; under gamescope, where winit's own
     // guess is pinned off, the whole scale. See [`fit`].
-    .scale_factor(|state: &Lightforge| state.ui_scale)
+    .scale_factor(|state: &Lightforge, _| state.ui_scale)
     // `transparent: true` only adds alpha; iced still clears to the theme's
     // background unless told otherwise here.
     .style(|state: &Lightforge, theme| iced::theme::Style {
@@ -174,9 +176,14 @@ fn main() -> iced::Result {
         },
         text_color: theme.palette().text,
     })
-    // Final size from the first frame, never resized: a Wayland client cannot
-    // position itself, so a window grown later stays off-centre.
-    .window(iced::window::Settings {
+    .run()?;
+    // Here, not in a message: every way out of the app ends up on this line.
+    tasks::stop_background_client_at_exit();
+    Ok(())
+}
+
+fn window_settings() -> iced::window::Settings {
+    iced::window::Settings {
         size: WINDOW,
         // Set once the splash is gone (`window_mode`): given here it would
         // not follow the app's scale, and would hold a smaller one open.
@@ -190,15 +197,9 @@ fn main() -> iced::Result {
             application_id: APP_ID.to_owned(),
             ..Default::default()
         },
+        exit_on_close_request: false,
         ..iced::window::Settings::default()
-    })
-    // Closing is handled by the app, so a transfer can checkpoint first.
-    // Set after `window`, which replaces the settings wholesale.
-    .exit_on_close_request(false)
-    .run()?;
-    // Here, not in a message: every way out of the app ends up on this line.
-    tasks::stop_background_client_at_exit();
-    Ok(())
+    }
 }
 
 struct Lightforge {
@@ -289,6 +290,7 @@ struct Lightforge {
     /// Whether the Battle.net client is up in the prefix, checked every few
     /// seconds: under Wine its tray icon is often nowhere to be seen.
     client_up: bool,
+    client_signed_in: bool,
     /// The running client's selected license, refreshed at most once a minute.
     game_time: Option<(ProductCode, lightforge_core::battlenet::GameTime)>,
     game_time_checked: Option<(ProductCode, Instant)>,
@@ -369,6 +371,10 @@ struct Lightforge {
     /// Set when the window has asked to close and a transfer is still coming
     /// to rest; the window closes once it has.
     closing: Option<iced::window::Id>,
+    tray_available: bool,
+    tray_installed: HashSet<ProductCode>,
+    tray_hidden: bool,
+    window_id: iced::window::Id,
 
     screen: Screen,
     setup: Option<SetupStatus>,
@@ -458,6 +464,10 @@ struct Lightforge {
     /// The product being launched, from pre-flight until its game is seen
     /// or the launch ends without one.
     launching: Option<ProductCode>,
+    /// Selection when Play was pressed, so changing tiles cancels a deferred launch.
+    launch_selection: Option<ProductCode>,
+    /// A tray Play waiting for its version check, or for the update it started.
+    tray_play: Option<ProductCode>,
     /// Games of ours that are up, at most one per product: its tile's PLAY
     /// is STOP until it exits. Another product can still be launched.
     playing: Vec<Session>,
@@ -556,10 +566,20 @@ struct Lightforge {
 }
 
 impl Lightforge {
-    fn new() -> (Self, Task<Message>) {
+    fn view_window(&self, _id: iced::window::Id) -> Element<'_, Message> {
+        self.view()
+    }
+
+    fn new(start_in_tray: bool) -> (Self, Task<Message>) {
         let mut app = Self::load_state(AppDirs::discover().ok());
-        let task = app.startup_tasks();
-        (app, task)
+        let hidden_start = start_in_tray.then(|| app.start_in_tray()).flatten();
+        let startup = app.startup_tasks();
+        if let Some(fallback) = hidden_start {
+            return (app, Task::batch([startup, fallback]));
+        }
+        let (id, open) = iced::window::open(window_settings());
+        app.window_id = id;
+        (app, open.discard().chain(startup))
     }
 
     /// Every message; a change of the status line is written to the log here,
@@ -572,6 +592,7 @@ impl Lightforge {
             && self.settings_anchor.as_ref().is_some_and(|a| a.since.elapsed() < SETTINGS_JUMP_SETTLE)
             && !matches!(message, Message::SettingsMeasured(_) | Message::SettingsScrolled(_));
         let task = self.step(message);
+        tray::set_games(self.tray_games());
         let task = match settling {
             true => Task::batch([task, measure_settings()]),
             false => task,

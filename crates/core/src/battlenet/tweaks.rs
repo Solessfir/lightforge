@@ -158,7 +158,7 @@ pub fn toasts_tweak(on: bool) -> Tweak {
             true => "true",
             false => "false",
         }),
-        "a client kept out of sight does not pop up over whatever is on screen",
+        "Battle.net notifications keep incoming messages reachable while its main window is hidden",
     )
 }
 
@@ -180,20 +180,20 @@ pub fn auto_update_tweak(uid: &str, on: bool) -> Tweak {
 /// Defaults for a per-account `<hash>.config`. The client stores window
 /// behaviour per account and ignores these keys in `Battle.net.config`.
 ///
-/// `tray` is [`super::tray_present`]: without one, a client closed to the tray
-/// is one nobody can bring back.
-pub fn account_tweaks(background: bool, tray: bool) -> Vec<Tweak> {
+/// `can_restore` means Wine has a tray icon, or Lightforge's GUI can reopen
+/// the client over IPC. Otherwise closing a hidden client loses access to it.
+pub fn account_tweaks(background: bool, can_restore: bool) -> Vec<Tweak> {
     let mut tweaks = vec![
-        match (background, tray) {
+        match (background, can_restore) {
             (true, true) => Tweak::new(
                 "User.Client.HideOnClose",
                 json!("true"),
-                "closing the window sends it to the tray, where it waits for the next hand-off",
+                "closing the window hides it, ready for Lightforge or the tray to reopen",
             ),
             (true, false) => Tweak::new(
                 "User.Client.HideOnClose",
                 json!("false"),
-                "this desktop has no tray to bring it back from, so closing the window quits",
+                "without a way to reopen the hidden client, closing the window quits",
             ),
             (false, _) => Tweak::new(
                 "User.Client.HideOnClose",
@@ -208,7 +208,7 @@ pub fn account_tweaks(background: bool, tray: bool) -> Vec<Tweak> {
         ),
     ];
     if background {
-        tweaks.push(toasts_tweak(false));
+        tweaks.push(toasts_tweak(true));
     }
     tweaks
 }

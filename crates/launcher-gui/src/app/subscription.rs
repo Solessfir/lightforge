@@ -34,6 +34,7 @@ impl Lightforge {
         let pads = Subscription::run(pad::inputs).map(|input| Message::Nav(NavFrom::Pad, input));
         let raises = Subscription::run(crate::instance::raises).map(|()| Message::Raise);
         let stops = Subscription::run(stop_signals).map(|()| Message::StopSignal);
+        let tray = Subscription::run(crate::tray::events).map(Message::Tray);
         let window_focus = iced::event::listen_with(|event, _, _| match event {
             iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::WindowFocused(false)),
@@ -43,7 +44,7 @@ impl Lightforge {
             _ => None,
         });
 
-        Subscription::batch([closing, hints, pads, raises, stops, window_focus])
+        Subscription::batch([closing, hints, pads, raises, stops, tray, window_focus])
     }
 
     /// The mouse, only while it means something: the ring is up, or a tile is held.

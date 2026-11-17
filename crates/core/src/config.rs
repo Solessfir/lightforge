@@ -76,6 +76,12 @@ pub struct Config {
     /// nothing is restored when the game exits.
     #[serde(default)]
     pub minimize_on_launch: bool,
+    /// Keep Lightforge running when its window closes, if a tray is available.
+    #[serde(default = "yes")]
+    pub close_to_tray: bool,
+    /// Hide Lightforge in the tray after a game starts, when a tray is available.
+    #[serde(default)]
+    pub hide_to_tray_on_launch: bool,
     /// Whether Battle.net comes up minimized for a hand-off. On by default,
     /// honoured only when [`crate::battlenet::signs_in_by_itself`].
     #[serde(default = "yes")]
@@ -190,6 +196,8 @@ impl Default for Config {
             download_limit_mbps: None,
             pause_downloads_while_playing: true,
             minimize_on_launch: false,
+            close_to_tray: true,
+            hide_to_tray_on_launch: false,
             battle_net_minimized: true,
             close_battle_net_on_play: false,
             battle_net_in_background: false,
@@ -686,6 +694,8 @@ mod tests {
         // A config from before these keeps its old behaviour.
         let old: Config = toml::from_str("prefix_user = \"steamuser\"\n").unwrap();
         assert!(!old.minimize_on_launch);
+        assert!(old.close_to_tray);
+        assert!(!old.hide_to_tray_on_launch);
         assert!(old.battle_net_minimized);
         // And a config from before the switch leaves the client running.
         assert!(!old.close_battle_net_on_play);

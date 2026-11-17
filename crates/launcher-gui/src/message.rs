@@ -109,6 +109,8 @@ pub(crate) enum Message {
     WindowFocused(bool),
     /// A second launch asked for this window; see [`crate::instance`].
     Raise,
+    Tray(crate::tray::Event),
+    TrayStartupTimeout,
     /// The window changed size, under gamescope only; see [`fit`].
     WindowResized,
     /// The window's height in points, and the [`Lightforge::ui_scale_gen`]
@@ -377,6 +379,8 @@ pub(crate) enum Message {
     GameLanguage(String),
     /// Whether the launcher gets out of the way once a game is up.
     MinimizeOnLaunch(bool),
+    CloseToTray(bool),
+    HideToTrayOnLaunch(bool),
     /// An interface size was picked in Settings › General.
     InterfaceSize(InterfaceSizeChoice),
     /// Whether a Battle.net hand-off puts the client in the tray.
@@ -390,6 +394,10 @@ pub(crate) enum Message {
     ModeRestartLater,
     /// What came of starting it out of sight, for the warm-up counted.
     BackgroundClient(u64, Result<tasks::Warmed, Problem>),
+    ClientSignInSeen(u64, bool),
+    TrayGamesFound(Vec<ProductCode>),
+    /// A tray Play's version check: launch, or update first.
+    TrayChecked(ProductCode, Box<Refreshed>),
     /// Whether the client holds this game back for an update.
     ClientUpdatePending(ProductCode, bool),
     /// The build the version service ships for a Battle.net game.

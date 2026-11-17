@@ -31,7 +31,27 @@ When the running client reports a game-time expiry for its selected WoW license,
 Lightforge shows the days remaining below the installed version. Partial days round
 up; missing, expired, or more than 24-hour-old observations are hidden.
 Enable **Seamless Battle.net Mode** to keep Battle.net
-signed in and hidden while Lightforge is open.
+signed in and hidden while Lightforge is running. Closing Battle.net's window
+hides it; if the client exits unexpectedly, Lightforge restarts it silently once
+the prefix is free. Quitting Lightforge stops Battle.net, including an open client
+window, while leaving running games alone. Battle.net notification popups
+remain enabled for incoming messages; friends and replies stay in Battle.net.
+While it connects or signs in, Play shows **CONNECTING**, **SIGNING IN**, or
+**SIGN IN REQUIRED** until Battle.net is ready.
+
+Closing Lightforge's window hides it in the system tray and leaves Battle.net
+and downloads running. Left-click the tray icon or launch
+Lightforge again to restore it. The tray menu also launches installed games without
+opening the window, and disables them while busy or waiting for sign-in. If an
+update is needed, the requested game launches after it completes; launch errors
+restore the window. Choose **Quit** in the tray menu or **Exit** in
+the app menu to exit safely. Settings > General has **Close to tray** and
+**Hide to tray when a game starts** switches. Without a system tray, closing
+exits normally; if the tray disappears while Lightforge is hidden, its window
+returns. Steam Game Mode keeps its normal close behavior.
+For desktop login autostart, run `lightforge-gui --start-in-tray`. It starts
+without opening a window after initial setup; if no tray appears within five
+seconds, the window opens. This flag leaves an already-running instance alone.
 
 For everything else (Diablo, Overwatch, Hearthstone, StarCraft) it sets up
 one Battle.net prefix and hands the launch to the client. Those games get a

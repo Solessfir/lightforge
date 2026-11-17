@@ -49,6 +49,8 @@ pub struct Preflight {
     /// The client is kept running between games: written to stay up after
     /// a hand-off. See [`crate::config::Config::battle_net_in_background`].
     background: bool,
+    /// The caller can reopen a hidden client without Wine's XEmbed tray.
+    window_restore: bool,
 }
 
 impl Preflight {
@@ -59,6 +61,7 @@ impl Preflight {
             grace: DEFAULT_GRACE,
             keep_client: false,
             background: false,
+            window_restore: false,
         }
     }
 
@@ -73,6 +76,13 @@ impl Preflight {
     /// after each hand-off.
     pub fn with_background_client(mut self, on: bool) -> Self {
         self.background = on;
+        self
+    }
+
+    /// Lightforge's GUI can reopen the client over IPC even without a Wine
+    /// tray icon, so closing its window may safely leave it running.
+    pub fn with_window_restore(mut self, available: bool) -> Self {
+        self.window_restore = available;
         self
     }
 
@@ -145,7 +155,8 @@ impl Preflight {
             let known = battlenet::known_product_codes(layout, &self.user);
             tweaks.extend(known.iter().map(|uid| battlenet::auto_update_tweak(uid, false)));
         }
-        let account = battlenet::account_tweaks(self.background, self.background && battlenet::tray_present());
+        let can_restore = self.background && (self.window_restore || battlenet::tray_present());
+        let account = battlenet::account_tweaks(self.background, can_restore);
         // What is there before the first background pass is the user's own,
         // and comes back when the mode goes. Keys both modes write are
         // written again just below.

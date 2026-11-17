@@ -1,4 +1,4 @@
-//! The client's main window, over X11.
+//! The client's startup and main windows, over X11.
 //!
 //! The client raises its window for every command a second invocation hands
 //! it, a hand-off included, and closes it again only once Agent reports the
@@ -99,6 +99,51 @@ impl ClientWindows {
         Ok(!self.main_windows()?.is_empty())
     }
 
+    /// Hide startup windows without closing a client that is still signing in.
+    /// Refresh the pids while Proton starts; reveal the windows when `stop`
+    /// returns `Some(true)` so an expired sign-in remains reachable.
+    pub fn keep_hidden(
+        &mut self,
+        mut pids: impl FnMut() -> Vec<u32>,
+        mut stop: impl FnMut() -> Option<bool>,
+    ) -> Result<usize, WindowError> {
+        let mut hidden = HashSet::new();
+        let mut refreshed: Option<Instant> = None;
+        let result = (|| -> Result<bool, WindowError> {
+            loop {
+                if let Some(reveal) = stop() {
+                    return Ok(reveal);
+                }
+                // A process scan costs milliseconds; the X poll stays fast.
+                if refreshed.is_none_or(|at| at.elapsed() >= RESCAN) {
+                    self.pids = pids();
+                    refreshed = Some(Instant::now());
+                }
+                for (window, showing) in self.windows(false)? {
+                    if showing == Showing::OnScreen {
+                        self.conn.unmap_window(window)?;
+                        hidden.insert(window);
+                    }
+                }
+                self.conn.flush()?;
+                std::thread::sleep(POLL);
+            }
+        })();
+        if !matches!(result, Ok(false)) {
+            for &window in &hidden {
+                // A startup dialog may have been destroyed after it was hidden.
+                let owner = self.conn.get_property(false, window, self.wm_pid, AtomEnum::CARDINAL, 0, 1)?.reply();
+                if owner.ok().and_then(|reply| reply.value32().and_then(|mut values| values.next()))
+                    .is_some_and(|pid| self.pids.contains(&pid))
+                {
+                    let _ = self.conn.map_window(window)?.check();
+                }
+            }
+            self.conn.flush()?;
+        }
+        result.map(|_| hidden.len())
+    }
+
     /// Put away every main window that maps until `until`, while `stage` says
     /// the client has taken the launch: closed the way its X button does when
     /// that `to_tray`, unmapped otherwise. Not before:
@@ -165,6 +210,10 @@ impl ClientWindows {
     }
 
     fn main_windows(&self) -> Result<Vec<(Window, Showing)>, WindowError> {
+        self.windows(true)
+    }
+
+    fn windows(&self, main_only: bool) -> Result<Vec<(Window, Showing)>, WindowError> {
         // The root's children and the window manager's own list: a manager
         // that reparents into frames (GNOME) only names the client in the
         // latter, one without EWMH only has the former.
@@ -197,7 +246,7 @@ impl ClientWindows {
             let attributes = self.conn.get_window_attributes(window)?;
             let state = self.conn.get_property(false, window, self.wm_state, AtomEnum::ANY, 0, 1)?;
             let (Ok(title), Ok(attributes)) = (title.reply(), attributes.reply()) else { continue };
-            if title.value != MAIN_TITLE {
+            if main_only && title.value != MAIN_TITLE {
                 continue;
             }
             let wm_state = state.reply().ok().and_then(|reply| reply.value32().and_then(|mut v| v.next()));
@@ -235,7 +284,50 @@ fn showing(map_state: MapState, wm_state: Option<u32>) -> Option<Showing> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use x11rb::protocol::xproto::{CreateWindowAux, PropMode, WindowClass};
+    use x11rb::wrapper::ConnectionExt as _;
+
     use super::*;
+
+    #[test]
+    fn startup_windows_are_unmapped_and_can_be_revealed_without_closing() {
+        if std::env::var_os("DISPLAY").is_none() {
+            return;
+        }
+        let mut windows = ClientWindows::connect(Vec::new()).unwrap();
+        let window = windows.conn.generate_id().unwrap();
+        windows.conn.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            window,
+            windows.root,
+            -10,
+            -10,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new().override_redirect(1),
+        ).unwrap().check().unwrap();
+        windows.conn.change_property32(PropMode::REPLACE, window, windows.wm_pid, AtomEnum::CARDINAL, &[u32::MAX]).unwrap();
+        // Login dialogs need no main-window title to be hidden.
+        for reveal in [false, true] {
+            windows.conn.map_window(window).unwrap().check().unwrap();
+            let refreshed = Cell::new(false);
+            assert_eq!(windows.keep_hidden(
+                || {
+                    refreshed.set(true);
+                    vec![u32::MAX]
+                },
+                || refreshed.get().then_some(reveal),
+            ).unwrap(), 1);
+            let expected = if reveal { MapState::VIEWABLE } else { MapState::UNMAPPED };
+            assert_eq!(windows.conn.get_window_attributes(window).unwrap().reply().unwrap().map_state, expected);
+        }
+        windows.conn.destroy_window(window).unwrap().check().unwrap();
+    }
 
     #[test]
     fn a_minimized_window_counts_as_open() {

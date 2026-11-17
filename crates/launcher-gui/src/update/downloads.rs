@@ -167,6 +167,10 @@ impl Lightforge {
                 if !paused_by_launch {
                     self.downloads.finished(&code);
                 }
+                if !paused_by_launch && !matches!(&result, Ok(done) if done.complete) {
+                    // Stopped, cancelled or failed: the tray's launch goes with it.
+                    let _ = self.tray_update_done(&code, false);
+                }
                 if self.winding_down.as_ref() == Some(&code) {
                     self.winding_down = None;
                 }
@@ -232,7 +236,8 @@ impl Lightforge {
                         };
                         let told = self.notify_unseen(&code, "is ready to play", installed.clone());
                         note(self, installed);
-                        Task::batch([self.pump(), self.reload_if_showing(&code), told])
+                        let play = self.tray_update_done(&code, true);
+                        Task::batch([self.pump(), self.reload_if_showing(&code), told, play])
                     }
                     Ok(done) if done.cancelled => {
                         // Paused, so it keeps its place with what it reached.

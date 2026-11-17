@@ -651,14 +651,13 @@ fn without_a_tray_a_background_client_quits_on_close() {
 }
 
 #[test]
-fn only_a_background_client_has_its_notifications_switched_off() {
+fn a_background_client_keeps_message_notifications_enabled() {
     let mut config = json!({ "User": { "Client": { "ToastsEnabled": "false" } } });
     apply_tweaks(&mut config, &account_tweaks(false, false));
     assert_eq!(config["User"]["Client"]["ToastsEnabled"], json!("false"), "the user's own choice stands");
 
-    let mut config = json!({ "User": { "Client": {} } });
     apply_tweaks(&mut config, &account_tweaks(true, true));
-    assert_eq!(config["User"]["Client"]["ToastsEnabled"], json!("false"));
+    assert_eq!(config["User"]["Client"]["ToastsEnabled"], json!("true"), "undo an older background-mode notification override");
 }
 
 #[test]

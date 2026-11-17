@@ -93,6 +93,9 @@ impl Lightforge {
     ///
     /// 1280x820 does not fit a 1280x800 screen. The minimum size goes too.
     pub(crate) fn window_mode(&mut self) -> Task<Message> {
+        if self.tray_hidden {
+            return Task::none();
+        }
         if self.console() {
             // Fullscreen has no window to grow; gamescope keeps its own scale.
             if !fit::owned() {

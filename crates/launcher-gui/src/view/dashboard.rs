@@ -465,18 +465,20 @@ impl Lightforge {
             ActionState::Unknown | ActionState::Offline { .. } => theme::PAUSE,
         };
 
-        // Battle.net's pre-install wording, as a caption only: PLAY stays PLAY.
+        let waiting_for_client = matches!(action, ActionState::Play).then(|| self.play_wait_label()).flatten();
+        // Battle.net's pre-install wording is a caption only.
         let release_date = self.families.release_date(self.selected.code.as_str(), "default");
         let session = self.session(&self.selected.code);
-        let label = match (session, action, release_date) {
+        let label = match (session, waiting_for_client, action, release_date) {
             (Some(session), ..) => stop_label(session),
-            (None, ActionState::Install, Some(_)) => "PRE-INSTALL",
+            (None, Some(waiting), ..) => waiting,
+            (None, None, ActionState::Install, Some(_)) => "PRE-INSTALL",
             _ => action.label(),
         };
         // This game being up turns its PLAY into STOP, in the colour of the
         // other thing this button never is: an error.
         let stoppable = session.is_some_and(|s| !s.stopping);
-        let color = if session.is_some() { theme::ERROR } else { color };
+        let color = if session.is_some() { theme::ERROR } else if waiting_for_client.is_some() { theme::PAUSE } else { color };
         let primary = button(
             container(text(label).size(theme::HEADING).color(iced::Color::WHITE))
                 .center_x(Length::Fill),
@@ -509,7 +511,7 @@ impl Lightforge {
 
         let primary_press = match () {
             _ if stoppable => Some(Message::AskStopGame),
-            _ if session.is_some() || self.busy || matches!(action, ActionState::Unknown) => None,
+            _ if session.is_some() || self.busy || waiting_for_client.is_some() || matches!(action, ActionState::Unknown) => None,
             // Beside another game only PLAY: downloads and repairs wait for it.
             _ if !self.playing.is_empty() && !matches!(action, ActionState::Play) => None,
             _ => Some(Message::Primary),

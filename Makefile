@@ -120,6 +120,8 @@ install:
 	install -Dm755 target/release/lightforge     $(DESTDIR)$(PREFIX)/bin/lightforge
 	install -Dm644 packaging/pro.tuxcore.Lightforge.desktop \
 	  $(DESTDIR)$(PREFIX)/share/applications/pro.tuxcore.Lightforge.desktop
+	sed -i 's|^Icon=pro.tuxcore.Lightforge$$|Icon=$(PREFIX)/share/icons/hicolor/256x256/apps/pro.tuxcore.Lightforge.png|' \
+	  $(DESTDIR)$(PREFIX)/share/applications/pro.tuxcore.Lightforge.desktop
 	install -Dm644 packaging/pro.tuxcore.Lightforge.metainfo.xml \
 	  $(DESTDIR)$(PREFIX)/share/metainfo/pro.tuxcore.Lightforge.metainfo.xml
 	@for size in 16 22 24 32 48 64 128 256 512; do \

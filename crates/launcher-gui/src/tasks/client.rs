@@ -19,6 +19,60 @@ const UPDATE_STARTS_WITHIN: Duration = Duration::from_secs(60);
 /// The log gets a progress line about every 1.5 s.
 const UPDATE_POLL: Duration = Duration::from_millis(500);
 
+static CLIENT_WINDOW_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static CLIENT_SIGNING_IN: AtomicBool = AtomicBool::new(false);
+
+/// An explicit request to use Battle.net ends any startup window suppression.
+pub(crate) fn show_client_windows() {
+    CLIENT_WINDOW_REQUESTS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub(crate) fn wait_for_client(layout: &Layout, user: &str, started: SystemTime, hide: bool) -> Readiness {
+    if !hide {
+        return battlenet::wait_until_ready(layout, user, started, SIGN_IN_TIMEOUT, || preflight::client_running(layout));
+    }
+    let requested = CLIENT_WINDOW_REQUESTS.load(Ordering::SeqCst);
+    let finished = std::sync::atomic::AtomicU8::new(0);
+    struct SigningIn<'a>(&'a std::sync::atomic::AtomicU8);
+    impl Drop for SigningIn<'_> {
+        fn drop(&mut self) {
+            // Also release the scoped watcher if reading readiness unwinds.
+            let _ = self.0.compare_exchange(0, 2, Ordering::SeqCst, Ordering::SeqCst);
+            CLIENT_SIGNING_IN.store(false, Ordering::SeqCst);
+        }
+    }
+    std::thread::scope(|scope| {
+        CLIENT_SIGNING_IN.store(true, Ordering::SeqCst);
+        let signing_in = SigningIn(&finished);
+        let watcher = scope.spawn(|| {
+            let result = ClientWindows::connect(Vec::new()).and_then(|mut windows| {
+                windows.keep_hidden(
+                    || preflight::client_pids(layout),
+                    || {
+                        if CLIENT_WINDOW_REQUESTS.load(Ordering::SeqCst) != requested {
+                            Some(true)
+                        } else {
+                            match finished.load(Ordering::SeqCst) {
+                                0 => None,
+                                1 => Some(false),
+                                _ => Some(true),
+                            }
+                        }
+                    },
+                )
+            });
+            if let Err(e) = result {
+                tracing::warn!("Battle.net's startup windows could not be hidden: {}", chain(&e));
+            }
+        });
+        let ready = battlenet::wait_until_ready(layout, user, started, SIGN_IN_TIMEOUT, || preflight::client_running(layout));
+        finished.store(if ready == Readiness::NeedsAttention { 2 } else { 1 }, Ordering::SeqCst);
+        let _ = watcher.join();
+        drop(signing_in);
+        ready
+    })
+}
+
 /// Clears [`Prefix::updating`] on every way out of the update.
 struct Updating;
 
@@ -51,6 +105,9 @@ pub(crate) trait ClientDriver {
     /// Start it in the tray. Returns the moment after which its log answers
     /// for this start.
     fn start(&self) -> Result<SystemTime, Problem>;
+    fn wait_until_ready(&self, layout: &Layout, user: &str, started: SystemTime) -> Readiness {
+        battlenet::wait_until_ready(layout, user, started, SIGN_IN_TIMEOUT, || self.client_running())
+    }
     fn quit(&self) -> Result<(), Problem>;
 }
 
@@ -75,6 +132,9 @@ impl ClientDriver for Live<'_> {
     }
 
     fn window_open(&self) -> bool {
+        if CLIENT_SIGNING_IN.load(Ordering::SeqCst) {
+            return true;
+        }
         ClientWindows::connect(preflight::client_pids(self.layout))
             .and_then(|windows| windows.any_open())
             .unwrap_or_else(|e| {
@@ -89,6 +149,7 @@ impl ClientDriver for Live<'_> {
 
     fn clear(&self) -> Result<(), Problem> {
         Preflight::new(self.config.prefix_user.clone())
+            .with_window_restore(true)
             .with_managed(self.config.managed_products())
             .with_background_client(true)
             .run(&lone_client_runner(self.config, self.layout)?, self.layout, None, &mut NoDownloads)
@@ -97,7 +158,14 @@ impl ClientDriver for Live<'_> {
     }
 
     fn start(&self) -> Result<SystemTime, Problem> {
-        start_client(self.config, &in_tls_container(lone_client_runner(self.config, self.layout)?)?, self.layout, true)
+        let started = start_client(self.config, &in_tls_container(lone_client_runner(self.config, self.layout)?)?, self.layout, true)?;
+        // Registered under the prefix lock, before a mode-off close can get it.
+        CLIENT_SIGNING_IN.store(true, Ordering::SeqCst);
+        Ok(started)
+    }
+
+    fn wait_until_ready(&self, layout: &Layout, user: &str, started: SystemTime) -> Readiness {
+        wait_for_client(layout, user, started, true)
     }
 
     fn quit(&self) -> Result<(), Problem> {
@@ -166,7 +234,7 @@ fn warm(
     client.clear()?;
     let started = client.start()?;
     drop(prefix);
-    Ok(match battlenet::wait_until_ready(layout, user, started, SIGN_IN_TIMEOUT, || client.client_running()) {
+    Ok(match client.wait_until_ready(layout, user, started) {
         Readiness::SignedIn => Warmed::Ready,
         Readiness::NeedsAttention => Warmed::NeedsSignIn { started },
         Readiness::Exited => Warmed::Exited,
@@ -229,7 +297,7 @@ pub fn update_through_client(
 
             let started = start_client(&config, &in_tls_container(runner)?, &layout, true)?;
             drop(prefix);
-            match battlenet::wait_until_ready(&layout, user, started, SIGN_IN_TIMEOUT, || preflight::client_running(&layout)) {
+            match wait_for_client(&layout, user, started, true) {
                 Readiness::SignedIn => {}
                 Readiness::NeedsAttention => {
                     return Err("Battle.net needs you to sign in — press its button, then try the update again".into());
@@ -327,37 +395,40 @@ fn give_way(client: &impl ClientDriver, background: bool) -> bool {
     }
 }
 
-/// The client went away by itself: it is owed a restart if that was to switch
-/// to a version it had just updated to.
-pub async fn note_self_update(layout: Layout, user: String) {
-    let _ = tokio::task::spawn_blocking(move || {
-        if battlenet::SessionLog::find(&layout, &user).is_some_and(|log| log.quit_to_update()) {
-            tracing::info!("Battle.net quit to switch to the version it updated to");
-            owe_client();
-        }
-    })
-    .await;
-}
-
-
 /// For the setting being switched off: a client nobody is using goes with it,
 /// and the settings the mode overwrote come back. After it has closed, since it
 /// rewrites its files on exit. One that stays up gets them back at the next
 /// pre-flight.
 pub async fn close_background_client(config: Config, layout: Layout) -> Result<String, Problem> {
     tokio::task::spawn_blocking(move || {
-        let _prefix = hold_prefix();
-        let client = Live { config: &config, layout: &layout };
-        if client.client_running() && !close_if_idle(&client)? {
-            return Ok("Battle.net stays open: a game or its window is using it".to_owned());
-        }
-        Ok(match battlenet::restore_overrides(&layout, &config.prefix_user).map_err(|e| Problem::of(&e))? {
-            true => "Battle.net closed, its own settings are back".to_owned(),
-            false => "Battle.net closed".to_owned(),
-        })
+        close_after_startup(&Live { config: &config, layout: &layout }, &layout, &config.prefix_user,
+            || CLIENT_SIGNING_IN.load(Ordering::SeqCst))
     })
     .await
     .map_err(|e| Problem::of(&e))?
+}
+
+fn close_after_startup(
+    client: &impl ClientDriver,
+    layout: &Layout,
+    user: &str,
+    mut signing_in: impl FnMut() -> bool,
+) -> Result<String, Problem> {
+    let _prefix = loop {
+        let prefix = hold_prefix();
+        if !signing_in() {
+            break prefix;
+        }
+        drop(prefix);
+        std::thread::sleep(UPDATE_POLL);
+    };
+    if client.client_running() && !close_if_idle(client)? {
+        return Ok("Battle.net stays open: a game or its window is using it".to_owned());
+    }
+    Ok(match battlenet::restore_overrides(layout, user).map_err(|e| Problem::of(&e))? {
+        true => "Battle.net closed, its own settings are back".to_owned(),
+        false => "Battle.net closed".to_owned(),
+    })
 }
 
 /// Close what the background mode left running, as the last thing Lightforge
@@ -376,11 +447,17 @@ pub fn stop_background_client_at_exit() {
     if !client.client_running() {
         return;
     }
-    match close_if_idle(&client) {
-        Ok(true) => tracing::info!("closed the background Battle.net on exit"),
-        Ok(false) => tracing::info!("left Battle.net running on exit: a game or its window is using it"),
+    match client.quit() {
+        Ok(()) => tracing::info!("closed the managed Battle.net on exit"),
         Err(e) => tracing::warn!("could not close the background Battle.net on exit: {e}"),
     }
+}
+
+/// The selected WoW license's recently observed game time, without account credentials.
+pub async fn game_time(layout: Layout, user: String, code: ProductCode) -> Option<battlenet::GameTime> {
+    tokio::task::spawn_blocking(move || battlenet::game_time(&layout, &user, &code, SystemTime::now()))
+        .await
+        .unwrap_or(None)
 }
 
 #[cfg(test)]
@@ -493,6 +570,30 @@ mod tests {
     }
 
     #[test]
+    fn switching_the_mode_off_during_startup_closes_the_hidden_client_after_sign_in() {
+        let scratch = tempfile::tempdir().unwrap();
+        let layout = Layout::with_root(scratch.path());
+        let client = Scripted { client: Cell::new(true), ..Default::default() };
+        let mut polls = 0;
+        let result = close_after_startup(&client, &layout, "test", || {
+            assert!(client.done.borrow().is_empty(), "startup must finish before closing");
+            polls += 1;
+            polls == 1
+        }).unwrap();
+        assert_eq!(polls, 2);
+        assert_eq!(*client.done.borrow(), ["quit"]);
+        assert_eq!(result, "Battle.net closed");
+        for client in [
+            Scripted { client: Cell::new(true), window: true, ..Default::default() },
+            Scripted { client: Cell::new(true), games: vec![GameProcess { pid: 4242, name: "Wow.exe".to_owned() }], ..Default::default() },
+        ] {
+            let result = close_after_startup(&client, &layout, "test", || false).unwrap();
+            assert!(client.done.borrow().is_empty(), "an open window or game keeps the client");
+            assert!(result.contains("stays open"));
+        }
+    }
+
+    #[test]
     fn make_way_closes_an_idle_background_client_and_owes_it() {
         let client = Scripted { client: Cell::new(true), ..Default::default() };
         assert!(give_way(&client, true));
@@ -522,11 +623,4 @@ mod tests {
         assert!(!give_way(&client, true));
         assert!(client.done.borrow().is_empty());
     }
-}
-
-/// The selected WoW license's recently observed game time, without account credentials.
-pub async fn game_time(layout: Layout, user: String, code: ProductCode) -> Option<battlenet::GameTime> {
-    tokio::task::spawn_blocking(move || battlenet::game_time(&layout, &user, &code, SystemTime::now()))
-        .await
-        .unwrap_or(None)
 }

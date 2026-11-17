@@ -4,8 +4,12 @@ use crate::*;
 
 impl Lightforge {
     pub(crate) fn play_launch(&self) -> Launch {
-        let profile = self.config.product(&self.selected.code).map(|product| &product.profile);
-        let stock = !matches!(self.selected.code, ProductCode::Custom(_))
+        self.play_launch_for(&self.selected.code)
+    }
+
+    fn play_launch_for(&self, code: &ProductCode) -> Launch {
+        let profile = self.config.product(code).map(|product| &product.profile);
+        let stock = !matches!(code, ProductCode::Custom(_))
             && !profile.is_some_and(|profile| profile.realmlist_override.is_some() || profile.cdn_override.is_some());
         if stock && !self.config.battle_net_declined && self.setup.as_ref().is_some_and(|setup| setup.battle_net) {
             Launch::BattleNet
@@ -14,10 +18,130 @@ impl Lightforge {
         }
     }
 
+    pub(crate) fn tray_games(&self) -> Vec<tray::Game> {
+        self.choices.iter().filter(|choice| {
+            self.tray_installed.contains(&choice.code) || self.installed_versions.contains_key(choice.code.as_str())
+                || choice.code == self.selected.code && self.local.executable.is_some() && self.local.version.is_some()
+        }).map(|choice| {
+            let handoff = self.kind_of(&choice.code) == Kind::HandOff;
+            let needs_client = handoff || self.play_launch_for(&choice.code) == Launch::BattleNet;
+            let ready = !needs_client || !self.config.battle_net_in_background
+                || self.client_phase == ClientPhase::Settled && self.client_up && self.client_signed_in;
+            tray::Game {
+                code: choice.code.clone(),
+                label: choice.label.clone(),
+                enabled: ready && !self.busy && !self.quitting_client && self.closing.is_none()
+                    && !self.client_update.as_ref().is_some_and(|update| update.code == choice.code)
+                    && self.session(&choice.code).is_none() && self.offline_drive(&choice.code).is_none()
+                    && (!handoff || self.family_of(&choice.code).is_some()),
+                icon: self.icons.get(&choice.code).or_else(|| self.tile_art(&self.catalog.line_of(&choice.code)))
+                    .map(|mark| mark.path.clone()),
+            }
+        }).collect()
+    }
+
+    pub(crate) fn launch_from_tray(&mut self, code: ProductCode) -> Task<Message> {
+        if !self.tray_games().iter().any(|game| game.code == code && game.enabled) {
+            return Task::none();
+        }
+        // Battle.net updates hand-off games itself.
+        if self.kind_of(&code) == Kind::HandOff {
+            return self.tray_launch(code);
+        }
+        // Launching an outdated build through Battle.net loses its sign-in.
+        self.tray_play = Some(code.clone());
+        Task::perform(
+            tasks::refresh(self.http.clone(), self.layout.clone(), code.clone(), self.build_region(&code), true),
+            move |refreshed| Message::TrayChecked(code.clone(), Box::new(refreshed)),
+        )
+    }
+
+    /// What the dashboard's main button would do for a game the tray asked for.
+    pub(crate) fn tray_checked(&mut self, code: ProductCode, refreshed: &Refreshed) -> Task<Message> {
+        if self.tray_play.as_ref() != Some(&code) {
+            return Task::none();
+        }
+        if self.closing.is_some() {
+            self.tray_play = None;
+            return Task::none();
+        }
+        let transfer = self.download_for(&code).filter(|d| !d.pre_download).map(Download::transfer);
+        match state::decide(&refreshed.local, refreshed.remote.as_ref(), transfer) {
+            ActionState::Play => {
+                self.tray_play = None;
+                self.tray_launch(code)
+            }
+            ActionState::Update { .. } | ActionState::Error { .. } | ActionState::Paused(_) => {
+                let queued = self.enqueue_for(code.clone());
+                // A queued pre-download of the same game holds the update back.
+                if self.download_for(&code).is_none_or(|d| d.pre_download) {
+                    self.tray_play = None;
+                    return Task::batch([queued, self.restore_from_tray()]);
+                }
+                let told = self.notify_unseen(&code, "is updating", "It starts once the update is done".to_owned());
+                Task::batch([queued, told])
+            }
+            // Already on its way: it starts once that finishes.
+            ActionState::Downloading(_) | ActionState::Queued => Task::none(),
+            // A first install or a missing drive needs the window.
+            ActionState::Install | ActionState::Offline { .. } | ActionState::Unknown => {
+                self.tray_play = None;
+                let select = self.choices.iter().find(|choice| choice.code == code).cloned()
+                    .map_or_else(Task::none, |choice| self.select(choice));
+                Task::batch([select, self.restore_from_tray()])
+            }
+        }
+    }
+
+    /// A finished update starts the game the tray asked for.
+    pub(crate) fn tray_update_done(&mut self, code: &ProductCode, complete: bool) -> Task<Message> {
+        if self.tray_play.as_ref() != Some(code) {
+            return Task::none();
+        }
+        self.tray_play = None;
+        match complete {
+            true => self.tray_launch(code.clone()),
+            false => Task::none(),
+        }
+    }
+
+    fn tray_launch(&mut self, code: ProductCode) -> Task<Message> {
+        // Checked again: the version check and an update both give the
+        // dashboard time to start this game, or another launch.
+        if !self.tray_games().iter().any(|game| game.code == code && game.enabled) {
+            return Task::none();
+        }
+        let how = if self.kind_of(&code) == Kind::HandOff { Launch::BattleNet } else { self.play_launch_for(&code) };
+        self.begin_launch();
+        let task = self.preflight_for(how, code);
+        if self.downgrade_dialog.is_some() || self.error.is_some() {
+            Task::batch([task, self.restore_from_tray()])
+        } else {
+            task
+        }
+    }
+
+    pub(crate) fn play_wait_label(&self) -> Option<&'static str> {
+        if !self.config.battle_net_in_background || self.play_launch() != Launch::BattleNet {
+            return None;
+        }
+        match self.client_phase {
+            ClientPhase::SigningIn => Some("SIGNING IN…"),
+            ClientPhase::NeedsSignIn => Some("SIGN IN REQUIRED"),
+            ClientPhase::Settled if !self.client_up || !self.client_signed_in => Some("CONNECTING…"),
+            ClientPhase::Settled => None,
+        }
+    }
+
     /// Get out of the way, where the user asked for that.
     ///
     /// Nothing un-minimizes when the game exits.
-    pub(crate) fn minimize_if_asked(&self) -> Task<Message> {
+    pub(crate) fn minimize_if_asked(&mut self) -> Task<Message> {
+        if self.config.hide_to_tray_on_launch {
+            if let Some(task) = self.hide_to_tray() {
+                return task;
+            }
+        }
         match self.config.minimize_on_launch {
             true => iced::window::latest().and_then(|id| iced::window::minimize(id, true)),
             false => Task::none(),
@@ -48,6 +172,7 @@ impl Lightforge {
         settle_after: Option<u64>,
     ) -> Task<Message> {
         let code = self.launching.take().unwrap_or_else(|| self.selected.code.clone());
+        self.launch_selection = None;
         self.busy = false;
         self.status = format!("{} is running", game.name);
         self.playing.retain(|s| s.code != code);
@@ -77,7 +202,22 @@ impl Lightforge {
 
     /// Ask the process table whether the Battle.net client is up.
     pub(crate) fn check_client(&self) -> Task<Message> {
-        Task::perform(tasks::prefix_seen(self.layout.clone()), |(up, game)| Message::ClientSeen { up, game })
+        let layout = self.layout.clone();
+        let user = self.config.prefix_user.clone();
+        let generation = self.client_generation;
+        let executables: Vec<_> = self.choices.iter().filter(|choice| self.kind_of(&choice.code) == Kind::Managed)
+            .map(|choice| (choice.code.clone(), self.layout.wow_exe(&choice.code))).collect();
+        Task::batch([
+            Task::perform(async move {
+                tokio::task::spawn_blocking(move || executables.into_iter().filter_map(|(code, path)| path.is_file().then_some(code)).collect())
+                    .await.unwrap_or_default()
+            }, Message::TrayGamesFound),
+            Task::perform(tasks::prefix_seen(self.layout.clone()), |(up, game)| Message::ClientSeen { up, game }),
+            Task::perform(async move {
+                tokio::task::spawn_blocking(move || lightforge_core::battlenet::client_signed_in(&layout, &user))
+                    .await.unwrap_or(false)
+            }, move |signed_in| Message::ClientSignInSeen(generation, signed_in)),
+        ])
     }
 
     pub(crate) fn check_game_time(&mut self) -> Task<Message> {
@@ -129,7 +269,12 @@ impl Lightforge {
     pub(crate) fn start_client_update(&mut self, code: ProductCode) -> Task<Message> {
         let progress = Arc::new(std::sync::Mutex::new(state::Progress::default()));
         let stop = lightforge_core::tact::download::Cancel::new();
-        self.client_update = Some(ClientUpdate { code: code.clone(), progress: progress.clone(), stop: stop.clone() });
+        self.client_update = Some(ClientUpdate {
+            code: code.clone(),
+            selected_at_start: Some(self.launch_selection.take().unwrap_or_else(|| self.selected.code.clone())),
+            progress: progress.clone(),
+            stop: stop.clone(),
+        });
         let uid = self.install_uid_of(&code);
         Task::perform(
             tasks::update_through_client(self.config.clone(), self.layout.clone(), uid, progress, stop),
@@ -168,6 +313,7 @@ impl Lightforge {
             return Task::none();
         }
         self.client_phase = ClientPhase::SigningIn;
+        self.client_signed_in = false;
         self.client_generation += 1;
         let generation = self.client_generation;
         let cancel = Cancel::new();
@@ -193,10 +339,13 @@ impl Lightforge {
             .as_ref()
             .is_some_and(|settings| matches!(settings.textures, TexturesStep::Removing));
         self.config.battle_net_in_background
+            && self.config.setup_complete
+            && !self.config.battle_net_declined
             && !self.client_up
             && self.client_phase == ClientPhase::Settled
             && !self.busy
             && !self.quitting_client
+            && self.closing.is_none()
             && self.client_update.is_none()
             && !self.in_play()
             && self.store_writer().is_none()
@@ -283,8 +432,16 @@ impl Lightforge {
     /// Clear the way for a launch of the selected game, then let
     /// [`Message::PreflightDone`] start it.
     pub(crate) fn preflight(&mut self, what: Launch) -> Task<Message> {
-        self.client_update_retries = 0;
+        self.begin_launch();
         self.preflight_for(what, self.selected.code.clone())
+    }
+
+    fn begin_launch(&mut self) {
+        self.client_update_retries = 0;
+        self.launch_selection = Some(self.selected.code.clone());
+        if let Some(update) = &mut self.client_update {
+            update.selected_at_start = None;
+        }
     }
 
     /// [`Self::preflight`] for a launch that waited, under the game it was for.

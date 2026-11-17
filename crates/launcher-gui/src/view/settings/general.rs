@@ -106,9 +106,10 @@ impl Lightforge {
                     "Seamless Battle.net Mode (Experimental)",
                     "Games that start through Battle.net open without waiting for it to sign in.",
                     self.hint(
-                        "It starts hidden with Lightforge and closes with it, unless a game \
-                         or its window is open. Needs a saved sign-in. Its notifications and game \
-                         updates stay off until you switch this off, which puts your own settings back. \
+                        "It starts hidden with Lightforge and quits when Lightforge exits. \
+                         Closing Battle.net only hides its window. Needs a saved sign-in. Battle.net notifications stay \
+                         enabled for incoming messages. Automatic game updates stay off until you \
+                         switch this off, which puts your own settings back. \
                          On a desktop with no tray, closing its window quits it. \
                          Games it starts use its Proton build and launch settings. \
                          Direct launches use the game's own Proton build and Game Settings.",
@@ -117,6 +118,18 @@ impl Lightforge {
                 ),
             ]),
             setting_group([
+                setting(
+                    "Close to tray",
+                    "Closing the window keeps Lightforge and Battle.net running.",
+                    self.hint("Use Exit in the app menu or Quit in the tray to stop Lightforge. Without a system tray, closing the window exits normally."),
+                    switch("close to tray", self.config.close_to_tray, Message::CloseToTray),
+                ),
+                setting(
+                    "Hide to tray when a game starts",
+                    "Keep Lightforge out of the taskbar while you play.",
+                    self.hint("Open Lightforge from its tray icon or launch it again to restore the window. Without a system tray, the minimize setting below still applies."),
+                    switch("hide to tray on launch", self.config.hide_to_tray_on_launch, Message::HideToTrayOnLaunch),
+                ),
                 setting(
                     "Minimize when a game starts",
                     "The window waits in the taskbar until you bring it back.",

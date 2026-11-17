@@ -88,16 +88,44 @@ fn drive_c(layout: &Layout) -> PathBuf {
 /// The game's Proton build: a companion shares the prefix's wineserver
 /// with the game, and two builds cannot share one.
 fn companion_runner(config: &Config, layout: &Layout, game: &ProductCode, runs: Option<Runs>) -> Result<lightforge_core::prefix::ProtonRunner, Problem> {
-    let runs = runs.unwrap_or_else(|| match Kind::of(game) {
+    let preferred = runs.unwrap_or_else(|| match Kind::of(game) {
         Kind::Managed => Runs::Game,
         Kind::HandOff => Runs::BattleNet,
     });
+    let runner = runner_for(config, layout, game, preferred);
+    let runner = match runs {
+        Some(_) => runner,
+        None => joining_runner(layout, runner, || {
+            runner_for(config, layout, game, match preferred {
+                Runs::Game => Runs::BattleNet,
+                Runs::BattleNet => Runs::Game,
+            })
+        }),
+    }?;
     // The game's MangoHud setting is for the game, not a companion's window.
-    let runner = runner_for(config, layout, game, runs)?.with_env("MANGOHUD", "0");
+    let runner = runner.with_env("MANGOHUD", "0");
     if !lightforge_core::preflight::served_by(&runner, layout) {
         return Err("the prefix is running under another Proton build; close what runs there first".to_owned().into());
     }
     Ok(runner)
+}
+
+fn joining_runner(
+    layout: &Layout,
+    preferred: Result<lightforge_core::prefix::ProtonRunner, String>,
+    alternative: impl FnOnce() -> Result<lightforge_core::prefix::ProtonRunner, String>,
+) -> Result<lightforge_core::prefix::ProtonRunner, String> {
+    use lightforge_core::preflight::{ProcKind, scan, served_by};
+
+    if preferred.as_ref().is_ok_and(|runner| served_by(runner, layout))
+        || !scan(layout).iter().any(|process| process.kind == ProcKind::WineServer)
+    {
+        return preferred;
+    }
+    match alternative() {
+        Ok(runner) if served_by(&runner, layout) => Ok(runner),
+        _ => preferred,
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +149,50 @@ mod tests {
         ] {
             let error = companion_runner(&config, &layout, &ProductCode::Retail, runs).err().unwrap();
             assert!(error.message.contains(pin), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn manual_companions_join_the_running_build_and_keep_the_empty_prefix_default() {
+        use lightforge_core::prefix::ProtonRunner;
+        use lightforge_core::proton::{ProtonFlavor, ProtonRelease, ProtonSource};
+        use std::process::{Command, Stdio};
+
+        let scratch = tempfile::tempdir().unwrap();
+        let layout = Layout::with_root(scratch.path().join("game"));
+        let build = |name: &str| {
+            let path = scratch.path().join(name);
+            std::fs::create_dir_all(path.join("files/bin")).unwrap();
+            std::fs::copy("/bin/cat", path.join("files/bin/wineserver")).unwrap();
+            ProtonRunner::new(&ProtonRelease {
+                version: name.into(),
+                flavor: ProtonFlavor::GloriousEggroll,
+                source: ProtonSource::Managed,
+                path,
+                built_at: None,
+            }, &layout, scratch.path())
+        };
+        let direct = build("direct");
+        let client = build("client");
+        assert_eq!(joining_runner(&layout, Ok(direct.clone()), || panic!("empty prefix uses its default")).unwrap().wineserver(), direct.wineserver());
+        assert!(joining_runner(&layout, Err("missing direct pin".into()), || panic!("empty prefix preserves the pin error")).is_err());
+
+        for active in [&direct, &client] {
+            let mut server = Command::new(active.wineserver())
+                .env("WINEPREFIX", layout.prefix())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn().unwrap();
+            let selected = joining_runner(&layout, Ok(direct.clone()), || Ok(client.clone()));
+            let missing_direct = joining_runner(&layout, Err("missing direct pin".into()), || Ok(client.clone()));
+            server.kill().unwrap();
+            server.wait().unwrap();
+            assert_eq!(selected.unwrap().wineserver(), active.wineserver());
+            if active.wineserver() == client.wineserver() {
+                assert_eq!(missing_direct.unwrap().wineserver(), client.wineserver());
+            } else {
+                assert!(missing_direct.is_err(), "an unrelated build is refused");
+            }
         }
     }
 }

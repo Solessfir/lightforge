@@ -290,7 +290,7 @@ impl Lightforge {
                 tooltip::Position::Bottom,
             ),
         );
-        if !self.client_up {
+        if !self.client_up || self.config.battle_net_in_background {
             return main;
         }
 

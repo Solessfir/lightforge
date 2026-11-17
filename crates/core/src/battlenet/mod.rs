@@ -30,7 +30,7 @@ pub use game_time::{game_time, GameTime};
 pub use installer::{fetch_installer, InstallOutcome, Installer, INSTALLER_FILE, INSTALLER_URL};
 pub use launch::{game_uid, game_uri, launch, launch_wrapped, resolve_game_uid, Launch};
 pub use overrides::{record_overrides, restore_overrides};
-pub use readiness::{signs_in_by_itself, wait_until_ready, LaunchStage, LaunchWatch, Readiness, SessionLog, UpdateState};
+pub use readiness::{client_signed_in, signs_in_by_itself, wait_until_ready, LaunchStage, LaunchWatch, Readiness, SessionLog, UpdateState};
 pub use registry::{apply_registry, registry_tweaks, RegValue};
 pub use tweaks::{
     account_tweaks, apply_tweaks, auto_update_tweak, closes_to_tray, configure, configure_accounts, default_tweaks, download_limit,

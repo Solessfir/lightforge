@@ -18,35 +18,17 @@ impl Lightforge {
             }
 
             Message::CloseRequested(id) => {
-                // A typed edit still waiting for typing to pause.
-                if self.env_unsaved {
-                    self.save_config();
-                }
-                // A deep scan only reads; there is nothing to wind down.
-                if let Some(cancel) = &self.deep_cancel {
-                    cancel.cancel();
-                }
-                // Closing mid-transfer must not orphan what was fetched: trip
-                // the token, let the run checkpoint its store, then close.
-                if let Some(code) = self.running().map(|d| d.code.clone()) {
-                    // Saved as running a message ago; keep it that way.
-                    self.queue_frozen = true;
-                    self.pause(&code);
-                }
-                // Other store writers finish too; `pump` closes the window after.
-                match self.store_writer() {
-                    Some(what) => {
-                        self.closing = Some(id);
-                        self.status = format!("finishing {what} safely…");
-                        Task::none()
+                if self.config.close_to_tray && self.closing.is_none() {
+                    if let Some(hide) = self.hide_to_tray() {
+                        return Ok(hide);
                     }
-                    None => iced::window::close(id),
                 }
+                self.quit_window(id)
             }
 
             // A second one does not wait for the checkpoint.
             Message::StopSignal if self.closing.is_some() => iced::exit(),
-            Message::StopSignal => iced::window::oldest().and_then(|id| Task::done(Message::CloseRequested(id))),
+            Message::StopSignal => self.quit_window(self.window_id),
 
             Message::SplashDone(count) => {
                 // The wizard counts off this same fetch.
@@ -61,7 +43,22 @@ impl Lightforge {
 
             Message::FinishSplash => self.finish_splash(),
 
-            Message::Exit => iced::exit(),
+            Message::Exit => self.quit_window(self.window_id),
+
+            Message::Tray(tray::Event::Available(available)) => {
+                self.tray_available = available;
+                match !available && self.tray_hidden {
+                    true => self.restore_from_tray(),
+                    false => Task::none(),
+                }
+            }
+            Message::Tray(tray::Event::Show) => self.restore_from_tray(),
+            Message::Tray(tray::Event::Quit) => Task::done(Message::Exit),
+            Message::Tray(tray::Event::Play(code)) => self.launch_from_tray(code),
+            Message::TrayStartupTimeout => match self.tray_hidden && !self.tray_available {
+                true => self.restore_from_tray(),
+                false => Task::none(),
+            },
 
             // Sizes come in points at iced's scale then; across a scale change
             // they are stale (measured: 1080 px read as 1458). Tagged by
@@ -122,21 +119,40 @@ impl Lightforge {
             }
 
             Message::WindowFocused(focused) => {
-                self.window_focused = focused;
+                self.window_focused = focused && !self.tray_hidden;
                 Task::none()
             }
 
             // Compositors may refuse the focus (Wayland's focus-stealing
             // rules); the attention request still marks the taskbar entry.
-            Message::Raise => iced::window::oldest().and_then(|id| {
-                Task::batch([
-                    iced::window::minimize(id, false),
-                    iced::window::gain_focus(id),
-                    iced::window::request_user_attention(id, Some(iced::window::UserAttention::Informational)),
-                ])
-            }),
+            Message::Raise => self.restore_from_tray(),
             other => return Err(other),
         })
+    }
+
+    fn quit_window(&mut self, id: iced::window::Id) -> Task<Message> {
+        if self.env_unsaved {
+            self.save_config();
+        }
+        if let Some(cancel) = &self.deep_cancel {
+            cancel.cancel();
+        }
+        // Preserve the running queue entry until its writer checkpoints.
+        if let Some(code) = self.running().map(|d| d.code.clone()) {
+            self.queue_frozen = true;
+            self.pause(&code);
+        }
+        self.closing = Some(id);
+        if let Some(warming) = self.warming.take() {
+            warming.cancel();
+        }
+        match self.store_writer() {
+            Some(what) => {
+                self.status = format!("finishing {what} safely…");
+                Task::none()
+            }
+            None => iced::exit(),
+        }
     }
 
     /// App-wide switches, the release notes, and Lightforge's own updates.
@@ -199,6 +215,18 @@ impl Lightforge {
 
             Message::MinimizeOnLaunch(on) => {
                 self.config.minimize_on_launch = on;
+                self.save_config();
+                Task::none()
+            }
+
+            Message::CloseToTray(on) => {
+                self.config.close_to_tray = on;
+                self.save_config();
+                Task::none()
+            }
+
+            Message::HideToTrayOnLaunch(on) => {
+                self.config.hide_to_tray_on_launch = on;
                 self.save_config();
                 Task::none()
             }

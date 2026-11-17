@@ -94,7 +94,7 @@ pub(crate) fn battlenet_config(ctx: Ctx) -> Result<()> {
     print_tweaks(&tweaks);
 
     let background = config.battle_net_in_background;
-    let account_tweaks = battlenet::account_tweaks(background, background && battlenet::tray_present());
+    let account_tweaks = battlenet::account_tweaks(background, background);
     let accounts = battlenet::configure_accounts(&layout, user, &account_tweaks)
         .context("writing the per-account config")?;
     if accounts.is_empty() {
@@ -152,6 +152,7 @@ pub(crate) fn battlenet_run(ctx: Ctx, proton: Option<String>, product: Option<Pr
     if !skip_preflight {
         let report = Preflight::new(config.prefix_user.clone()).with_managed(config.managed_products())
             .with_background_client(config.battle_net_in_background)
+            .with_window_restore(config.battle_net_in_background)
             .run(&runner, &layout, code.as_ref(), &mut downloads)
             .context("pre-flight cleanup")?;
         print_preflight(&report);

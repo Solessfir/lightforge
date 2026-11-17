@@ -253,8 +253,8 @@ impl Lightforge {
         if self.store_writer().is_some() || self.deep_cancel.is_some() {
             return Task::none();
         }
-        if let Some(id) = self.closing.take() {
-            return iced::window::close(id);
+        if self.closing.take().is_some() {
+            return iced::exit();
         }
         if !self.delete_after_cancel.is_empty() {
             let code = self.delete_after_cancel.remove(0);
@@ -311,6 +311,10 @@ impl Lightforge {
 
     /// Stop one product's transfer, keeping what it reached.
     pub(crate) fn pause(&mut self, code: &ProductCode) {
+        // A paused or dropped update no longer owes the tray a launch.
+        if self.tray_play.as_ref() == Some(code) {
+            self.tray_play = None;
+        }
         let Some(entry) = self.queue.iter_mut().find(|d| &d.code == code) else {
             return;
         };

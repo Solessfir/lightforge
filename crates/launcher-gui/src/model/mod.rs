@@ -284,6 +284,7 @@ pub(crate) enum ClientPhase {
 #[derive(Debug, Clone)]
 pub(crate) struct ClientUpdate {
     pub(crate) code: ProductCode,
+    pub(crate) selected_at_start: Option<ProductCode>,
     pub(crate) progress: Arc<std::sync::Mutex<state::Progress>>,
     pub(crate) stop: lightforge_core::tact::download::Cancel,
 }

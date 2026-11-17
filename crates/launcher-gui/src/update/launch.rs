@@ -4,16 +4,30 @@ use crate::*;
 
 impl Lightforge {
     pub(crate) fn update_launch(&mut self, message: Message) -> Result<Task<Message>, Message> {
-        self.update_play(message)
+        let launching = self.launching.is_some() || self.client_update.is_some();
+        let closing = self.closing.is_some();
+        let task = self.update_play(message)
             .or_else(|m| self.update_battle_net_launch(m))
             .or_else(|m| self.update_client(m))
-            .or_else(|m| self.update_install_dialog(m))
+            .or_else(|m| self.update_install_dialog(m))?;
+        if launching && self.tray_hidden && !closing && self.closing.is_none()
+            && (self.error.is_some() || self.downgrade_dialog.is_some())
+        {
+            Ok(Task::batch([task, self.restore_from_tray()]))
+        } else {
+            Ok(task)
+        }
     }
 
     /// Play and Stop, and watching the game in between.
     fn update_play(&mut self, message: Message) -> Result<Task<Message>, Message> {
         Ok(match message {
             Message::Primary => {
+                if self.session(&self.selected.code).is_none() && matches!(self.action(), ActionState::Play)
+                    && self.play_wait_label().is_some()
+                {
+                    return Ok(Task::none());
+                }
                 // Pressed on a game only being looked at: it joins the band.
                 self.track_selected();
                 match self.action() {
@@ -120,6 +134,7 @@ impl Lightforge {
             Message::Launched(result) => {
                 self.busy = false;
                 let launched = self.launching.take().unwrap_or_else(|| self.selected.code.clone());
+                self.launch_selection = None;
                 match result {
                     Ok(note) => self.status = note,
                     Err(e) => self.error = Some(e),
@@ -137,8 +152,7 @@ impl Lightforge {
                 match result {
                     // The paused queue lasts the session, as on PLAY.
                     Ok(tasks::Handoff::Playing(game)) => {
-                        // Minimized only now, not when the hand-off started: the
-                        // client's window and its sign-in are meant to be seen.
+                        // Hide only once the game is up, so failed launches stay visible.
                         // The client stays up, so the prefix is not settled after.
                         // Battle.net started the game, so the launch options
                         // cannot go around it: they run beside it, `%command%`
@@ -186,9 +200,13 @@ impl Lightforge {
                     Ok(tasks::Handoff::NeedsUpdate) => {
                         let code = self.launching.clone().unwrap_or_else(|| self.selected.code.clone());
                         match Kind::of(&code) {
-                            // Its store is ours: Agent must not patch it.
+                            // Its store is ours: Agent must not patch it, so start
+                            // it directly, at the cost of the remembered sign-in.
                             Kind::Managed => {
-                                self.launch_failed("Battle.net wants to update this game - open Battle.net to continue")
+                                tracing::info!("Battle.net wants to update {}; starting it directly", code.as_str());
+                                self.busy = false;
+                                self.launching = None;
+                                self.preflight_for(Launch::Game, code)
                             }
                             // The lock is released: an update can take an hour,
                             // and another game can be played meanwhile.
@@ -235,6 +253,7 @@ impl Lightforge {
                     Err(e) => {
                         self.busy = false;
                         self.launching = None;
+                        self.launch_selection = None;
                         self.error = Some(e);
                         return Ok(self.pump());
                     }
@@ -271,7 +290,9 @@ impl Lightforge {
     /// quitting it.
     fn update_client(&mut self, message: Message) -> Result<Task<Message>, Message> {
         Ok(match message {
-            Message::ClientWatch => self.check_client(),
+            Message::ClientWatch => {
+                if self.client_may_return() { self.warm_client() } else { self.check_client() }
+            },
 
             Message::ClientSeen { up, game } => {
                 let vanished = self.client_up && !up;
@@ -284,6 +305,7 @@ impl Lightforge {
                     }
                 }
                 if !up {
+                    self.client_signed_in = false;
                     self.game_time = None;
                     self.game_time_checked = None;
                     self.update_pending = None;
@@ -292,17 +314,32 @@ impl Lightforge {
                 if !game && self.client_may_return() && (tasks::take_client_owed() | self.take_cli_owed()) {
                     return Ok(self.warm_client());
                 }
-                // Not during a launch, which reads the same log itself.
-                if vanished && self.config.battle_net_in_background && !self.busy {
-                    return Ok(Task::perform(
-                        tasks::note_self_update(self.layout.clone(), self.config.prefix_user.clone()),
-                        |()| Message::ClientWatch,
-                    ));
+                if vanished && self.client_may_return() {
+                    return Ok(Task::done(Message::ClientWatch));
                 }
                 match up {
                     true => Task::batch([self.check_update_pending(), self.check_game_time()]),
                     false => Task::none(),
                 }
+            }
+
+            Message::TrayChecked(code, refreshed) => self.tray_checked(code, &refreshed),
+
+            Message::TrayGamesFound(installed) => {
+                self.tray_installed = installed.into_iter().collect();
+                Task::none()
+            }
+
+            Message::ClientSignInSeen(generation, signed_in) => {
+                if generation == self.client_generation {
+                    self.client_signed_in = signed_in;
+                    if signed_in && self.client_up && self.client_phase == ClientPhase::NeedsSignIn {
+                        self.client_phase = ClientPhase::Settled;
+                        // A late answer from the expired sign-in watch must not lock Play again.
+                        self.client_generation += 1;
+                    }
+                }
+                Task::none()
             }
 
             Message::GameTimeRead(code, at, time) => {
@@ -336,13 +373,16 @@ impl Lightforge {
             }
 
             Message::ClientUpdateDone(code, result) => {
-                self.client_update = None;
+                let resume = self.client_update.take().is_some_and(|update| {
+                    update.code == code && update.selected_at_start.as_ref() == Some(&self.selected.code)
+                });
                 self.update_pending = None;
                 match result {
                     // Asked for by pressing Play, so it starts, unless the user
                     // has since gone to another game or started something else.
-                    Ok(tasks::ClientUpdated::Completed) if self.selected.code == code && !self.busy => {
-                        self.preflight(Launch::BattleNet)
+                    Ok(tasks::ClientUpdated::Completed) if resume && !self.busy && self.closing.is_none() => {
+                        self.launch_selection = Some(self.selected.code.clone());
+                        self.preflight_for(Launch::BattleNet, code)
                     }
                     Ok(tasks::ClientUpdated::Completed) => {
                         self.status = "the update is done".to_owned();
@@ -384,6 +424,7 @@ impl Lightforge {
                         Task::batch([watch, released, self.check_client()])
                     }
                     other => {
+                        self.client_signed_in = matches!(other, Ok(tasks::Warmed::Ready));
                         if let Err(e) = other {
                             tracing::warn!("Battle.net did not start in the background: {e}");
                         }
