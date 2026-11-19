@@ -126,6 +126,10 @@ impl Lightforge {
             // Compositors may refuse the focus (Wayland's focus-stealing
             // rules); the attention request still marks the taskbar entry.
             Message::Raise => self.restore_from_tray(),
+            Message::PlayRequested(code) => {
+                self.play_request = Some((code, Instant::now()));
+                Task::none()
+            }
             other => return Err(other),
         })
     }

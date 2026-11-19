@@ -32,7 +32,10 @@ impl Lightforge {
         // Gamepads, for when Steam hands us a pad, not keys. Read on a
         // thread of their own for the whole run; see [`pad`].
         let pads = Subscription::run(pad::inputs).map(|input| Message::Nav(NavFrom::Pad, input));
-        let raises = Subscription::run(crate::instance::raises).map(|()| Message::Raise);
+        let raises = Subscription::run(crate::instance::asks).map(|code| match code.is_empty() {
+            true => Message::Raise,
+            false => Message::PlayRequested(code.parse().unwrap_or_else(|never| match never {})),
+        });
         let stops = Subscription::run(stop_signals).map(|()| Message::StopSignal);
         let tray = Subscription::run(crate::tray::events).map(Message::Tray);
         let window_focus = iced::event::listen_with(|event, _, _| match event {

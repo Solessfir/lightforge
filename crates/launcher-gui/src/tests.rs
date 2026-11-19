@@ -2532,6 +2532,45 @@ fn hidden_windows_ignore_queued_focus_events() {
 }
 
 #[test]
+fn a_play_request_waits_for_the_game_to_be_playable() {
+    let (mut app, _scratch) = test_app();
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.update(Message::PlayRequested(ProductCode::Retail));
+    assert!(app.play_request.is_some(), "the startup probe has not said whether Battle.net is there");
+    let mut setup = SetupStatus::inspect(&app.layout, app.dirs.as_ref().unwrap(), &app.config);
+    setup.battle_net = true;
+    app.setup = Some(setup);
+    app.config.battle_net_in_background = true;
+    app.tray_hidden = true;
+    app.tray_installed.insert(ProductCode::Retail);
+    let _ = app.update(Message::PlayRequested(ProductCode::Retail));
+    assert!(app.play_request.is_some(), "sign-in is still pending");
+    app.config.battle_net_declined = true;
+    let _ = app.update(Message::WindowFocused(false));
+    assert!(app.play_request.is_none());
+    assert_eq!(app.tray_play, Some(ProductCode::Retail), "it goes the tray's way, through the version check");
+
+    let _ = app.update(Message::TrayChecked(ProductCode::Retail, tray_check(&app, &ProductCode::Retail, "newer")));
+    assert!(app.download_for(&ProductCode::Retail).is_some(), "the update is queued");
+    let _ = app.update(Message::Downloaded(ProductCode::Retail, Ok(Box::new(Complete { complete: true, ..incomplete() }))));
+    assert_eq!(app.launching, Some(ProductCode::Retail), "the updated game starts");
+    assert!(app.tray_hidden);
+    let _ = app.update(Message::PlayRequested(ProductCode::Retail));
+    assert!(app.play_request.is_none(), "a second press does not wait to retry this launch");
+}
+
+#[test]
+fn a_play_request_that_never_becomes_playable_opens_the_window() {
+    let (mut app, _scratch) = test_app();
+    app.tray_hidden = true;
+    let Some(asked) = Instant::now().checked_sub(Duration::from_secs(600)) else { return };
+    app.play_request = Some((ProductCode::Custom("missing".into()), asked));
+    let _ = app.update(Message::WindowFocused(false));
+    assert!(app.play_request.is_none());
+    assert!(!app.tray_hidden);
+}
+
+#[test]
 fn tray_launch_keeps_the_window_hidden_and_rechecks_availability() {
     let (mut app, _scratch) = test_app();
     let mut setup = SetupStatus::inspect(&app.layout, app.dirs.as_ref().unwrap(), &app.config);

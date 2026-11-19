@@ -140,10 +140,18 @@ fn main() -> iced::Result {
         return Ok(());
     }
     start_logging();
-    let start_in_tray = std::env::args().any(|arg| arg == "--start-in-tray");
-    if !instance::claim(std::env::args().any(|arg| arg == instance::AFTER_UPDATE), !start_in_tray) {
+    // `--play <code>` starts a game as the tray's Play does, starting Lightforge in the tray first if need be.
+    let play = std::env::args().skip_while(|arg| arg != "--play").nth(1);
+    let start_in_tray = play.is_some() || std::env::args().any(|arg| arg == "--start-in-tray");
+    let ask = match (&play, start_in_tray) {
+        (Some(code), _) => instance::Ask::Play(code),
+        (None, true) => instance::Ask::Nothing,
+        (None, false) => instance::Ask::Raise,
+    };
+    if !instance::claim(std::env::args().any(|arg| arg == instance::AFTER_UPDATE), ask) {
         return Ok(());
     }
+    let play = play.map(|code| code.parse::<ProductCode>().unwrap_or_else(|never| match never {}));
     tune_allocator();
     theme::init_fonts();
     fit::take_over_scale();
@@ -152,7 +160,7 @@ fn main() -> iced::Result {
     // from `run`, not `run_with`.
     iced::daemon(
         move || {
-            let (app, task) = Lightforge::new(start_in_tray);
+            let (app, task) = Lightforge::new(start_in_tray, play.clone());
             trace::mark("app constructed, startup tasks queued");
             (app, task)
         },
@@ -468,6 +476,8 @@ struct Lightforge {
     launch_selection: Option<ProductCode>,
     /// A tray Play waiting for its version check, or for the update it started.
     tray_play: Option<ProductCode>,
+    /// A `--play` waiting for its game to be playable, such as for Battle.net to sign in.
+    play_request: Option<(ProductCode, Instant)>,
     /// Games of ours that are up, at most one per product: its tile's PLAY
     /// is STOP until it exits. Another product can still be launched.
     playing: Vec<Session>,
@@ -570,8 +580,9 @@ impl Lightforge {
         self.view()
     }
 
-    fn new(start_in_tray: bool) -> (Self, Task<Message>) {
+    fn new(start_in_tray: bool, play: Option<ProductCode>) -> (Self, Task<Message>) {
         let mut app = Self::load_state(AppDirs::discover().ok());
+        app.play_request = play.map(|code| (code, Instant::now()));
         let hidden_start = start_in_tray.then(|| app.start_in_tray()).flatten();
         let startup = app.startup_tasks();
         if let Some(fallback) = hidden_start {
@@ -592,6 +603,10 @@ impl Lightforge {
             && self.settings_anchor.as_ref().is_some_and(|a| a.since.elapsed() < SETTINGS_JUMP_SETTLE)
             && !matches!(message, Message::SettingsMeasured(_) | Message::SettingsScrolled(_));
         let task = self.step(message);
+        let task = match self.requested_play() {
+            Some(play) => Task::batch([task, play]),
+            None => task,
+        };
         tray::set_games(self.tray_games());
         let task = match settling {
             true => Task::batch([task, measure_settings()]),

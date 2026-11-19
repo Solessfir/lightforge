@@ -2,6 +2,9 @@
 
 use crate::*;
 
+/// How long a `--play` waits for its game to become playable: a cold start includes Battle.net starting and signing in.
+const PLAY_REQUEST_WAIT: Duration = Duration::from_secs(180);
+
 impl Lightforge {
     pub(crate) fn play_launch(&self) -> Launch {
         self.play_launch_for(&self.selected.code)
@@ -54,6 +57,30 @@ impl Lightforge {
             tasks::refresh(self.http.clone(), self.layout.clone(), code.clone(), self.build_region(&code), true),
             move |refreshed| Message::TrayChecked(code.clone(), Box::new(refreshed)),
         )
+    }
+
+    /// Start a `--play` game once the tray could. Updates go the tray's way too:
+    /// queued, and the game starts when they finish.
+    pub(crate) fn requested_play(&mut self) -> Option<Task<Message>> {
+        let (code, asked) = self.play_request.as_ref()?;
+        // Already up or on its way: a second press must not retry a launch that fails.
+        if self.session(code).is_some() || self.launching.as_ref() == Some(code) || self.tray_play.as_ref() == Some(code) {
+            self.play_request = None;
+            return None;
+        }
+        // Battle.net updating itself or waiting for a sign-in: the window says which.
+        if asked.elapsed() > PLAY_REQUEST_WAIT {
+            tracing::warn!("{} was not playable within {}s of --play", code.as_str(), PLAY_REQUEST_WAIT.as_secs());
+            self.play_request = None;
+            return Some(self.restore_from_tray());
+        }
+        // Until the startup probe says Battle.net is there, every game looks
+        // ready to start directly, which would lose the remembered sign-in.
+        if self.setup.is_none() || !self.tray_games().iter().any(|game| &game.code == code && game.enabled) {
+            return None;
+        }
+        let (code, _) = self.play_request.take()?;
+        Some(self.launch_from_tray(code))
     }
 
     /// What the dashboard's main button would do for a game the tray asked for.

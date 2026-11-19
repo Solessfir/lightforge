@@ -52,6 +52,11 @@ returns. Steam Game Mode keeps its normal close behavior.
 For desktop login autostart, run `lightforge-gui --start-in-tray`. It starts
 without opening a window after initial setup; if no tray appears within five
 seconds, the window opens. This flag leaves an already-running instance alone.
+`lightforge-gui --play <product>` (e.g. `wowf`) starts a game the way the tray's
+Play does, starting Lightforge in the tray first if it is not running. It
+waits for Battle.net to sign in, queues an update first if one is due, and does
+nothing if the game is already up. If the game cannot start within three
+minutes, the window opens instead.
 
 For everything else (Diablo, Overwatch, Hearthstone, StarCraft) it sets up
 one Battle.net prefix and hands the launch to the client. Those games get a

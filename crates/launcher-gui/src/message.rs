@@ -109,6 +109,8 @@ pub(crate) enum Message {
     WindowFocused(bool),
     /// A second launch asked for this window; see [`crate::instance`].
     Raise,
+    /// A second launch asked for this game with `--play`.
+    PlayRequested(ProductCode),
     Tray(crate::tray::Event),
     TrayStartupTimeout,
     /// The window changed size, under gamescope only; see [`fit`].
