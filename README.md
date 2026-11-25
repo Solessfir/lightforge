@@ -47,8 +47,8 @@ update is needed, the requested game launches after it completes; launch errors
 restore the window. Choose **Quit** in the tray menu or **Exit** in
 the app menu to exit safely. Settings > General has **Close to tray** and
 **Hide to tray when a game starts** switches. Without a system tray, closing
-exits normally; if the tray disappears while Lightforge is hidden, its window
-returns. Steam Game Mode keeps its normal close behavior.
+exits normally; if the tray disappears while Lightforge is hidden and is not
+back within five seconds, its window returns. Steam Game Mode keeps its normal close behavior.
 For desktop login autostart, run `lightforge-gui --start-in-tray`. It starts
 without opening a window after initial setup; if no tray appears within five
 seconds, the window opens. This flag leaves an already-running instance alone.

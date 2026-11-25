@@ -48,14 +48,14 @@ impl Lightforge {
             Message::Tray(tray::Event::Available(available)) => {
                 self.tray_available = available;
                 match !available && self.tray_hidden {
-                    true => self.restore_from_tray(),
+                    true => Task::perform(tasks::after(tray::TRAY_WAIT), |()| Message::TrayWaitOver),
                     false => Task::none(),
                 }
             }
             Message::Tray(tray::Event::Show) => self.restore_from_tray(),
             Message::Tray(tray::Event::Quit) => Task::done(Message::Exit),
             Message::Tray(tray::Event::Play(code)) => self.launch_from_tray(code),
-            Message::TrayStartupTimeout => match self.tray_hidden && !self.tray_available {
+            Message::TrayWaitOver => match self.tray_hidden && !self.tray_available {
                 true => self.restore_from_tray(),
                 false => Task::none(),
             },

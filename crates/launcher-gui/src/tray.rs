@@ -13,6 +13,10 @@ use crate::{Lightforge, Message, ProductCode, Task};
 
 const ITEM: &str = "/StatusNotifierItem";
 const MENU: &str = "/MenuBar";
+
+/// How long a hidden Lightforge waits for a tray. A shell reload takes the tray
+/// away for about a second, and must not bring the window back.
+pub(crate) const TRAY_WAIT: Duration = Duration::from_secs(5);
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 
@@ -139,7 +143,7 @@ impl Lightforge {
         }
         self.tray_hidden = true;
         self.window_focused = false;
-        Some(Task::perform(crate::tasks::after(Duration::from_secs(5)), |()| Message::TrayStartupTimeout))
+        Some(Task::perform(crate::tasks::after(TRAY_WAIT), |()| Message::TrayWaitOver))
     }
 
     /// Wayland cannot hide a winit window; the daemon keeps the app alive instead.
@@ -416,20 +420,26 @@ mod tests {
         app.config.setup_complete = true;
         let _ = app.start_in_tray();
         let _ = app.update(Message::Tray(Event::Available(true)));
-        let _ = app.update(Message::TrayStartupTimeout);
+        let _ = app.update(Message::TrayWaitOver);
         assert!(app.tray_hidden);
         let _ = app.update(Message::Tray(Event::Available(false)));
+        let _ = app.update(Message::Tray(Event::Available(true)));
+        let _ = app.update(Message::TrayWaitOver);
+        assert!(app.tray_hidden, "a tray that comes back in time, as on a shell reload, keeps the window hidden");
+        let _ = app.update(Message::Tray(Event::Available(false)));
+        assert!(app.tray_hidden, "the tray gets time to come back");
+        let _ = app.update(Message::TrayWaitOver);
         assert!(!app.tray_hidden);
         assert!(!app.window_focused);
 
         let _ = app.start_in_tray();
-        let _ = app.update(Message::TrayStartupTimeout);
+        let _ = app.update(Message::TrayWaitOver);
         assert!(!app.tray_hidden);
 
         let _ = app.start_in_tray();
         let _ = app.update(Message::Raise);
         let restored_window = app.window_id;
-        let _ = app.update(Message::TrayStartupTimeout);
+        let _ = app.update(Message::TrayWaitOver);
         assert_eq!(app.window_id, restored_window);
     }
 
@@ -551,6 +561,7 @@ mod tests {
         let _ = app.update(Message::Exit);
         assert_eq!(app.closing, Some(app.window_id));
         let _ = app.update(Message::Tray(Event::Available(false)));
+        let _ = app.update(Message::TrayWaitOver);
         assert!(!app.tray_hidden);
     }
 

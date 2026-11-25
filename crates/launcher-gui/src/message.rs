@@ -112,7 +112,9 @@ pub(crate) enum Message {
     /// A second launch asked for this game with `--play`.
     PlayRequested(ProductCode),
     Tray(crate::tray::Event),
-    TrayStartupTimeout,
+    /// [`crate::tray::TRAY_WAIT`] after a hidden start or the tray going away:
+    /// the window returns if there is still no tray.
+    TrayWaitOver,
     /// The window changed size, under gamescope only; see [`fit`].
     WindowResized,
     /// The window's height in points, and the [`Lightforge::ui_scale_gen`]
